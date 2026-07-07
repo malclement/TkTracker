@@ -1,8 +1,9 @@
 PREFIX ?= /Applications
 APP = dist/TkTracker.app
 BIN = .build/release/TkTracker
+VERSION = $(shell /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Support/Info.plist)
 
-.PHONY: build test release app install run clean icon
+.PHONY: build test release app install run clean icon zip
 
 build:
 	swift build
@@ -28,6 +29,10 @@ app: release dist/AppIcon.icns
 	cp dist/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	codesign --force --sign - $(APP)
 	@echo "built $(APP)"
+
+zip: app
+	ditto -c -k --sequesterRsrc --keepParent $(APP) dist/TkTracker-$(VERSION).zip
+	@echo "built dist/TkTracker-$(VERSION).zip"
 
 install: app
 	rm -rf "$(PREFIX)/TkTracker.app"
