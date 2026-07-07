@@ -30,7 +30,7 @@ struct SettingsView: View {
                 Toggle("Launch at login", isOn: $store.launchAtLogin)
                 VStack(alignment: .leading, spacing: 3) {
                     Toggle("Include pre-cleanup history (estimated)", isOn: $store.includeHistory)
-                    Text("Claude Code deletes transcripts after ~30 days. Its aggregate stats survive; TkTracker uses them to reconstruct earlier usage per day and model, expanded by each model's lifetime cache mix.")
+                    Text("Claude Code deletes transcripts after ~30 days. Its aggregate stats survive; TkTracker uses them to reconstruct earlier usage per day and model, expanded by each model's lifetime cache mix. Only days from before you started using TkTracker are ever estimated — exact usage seen since then is archived locally and kept for good.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -41,20 +41,25 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                 }
                 LabeledContent("Cache") {
-                    HStack {
-                        Button("Rescan everything") {
-                            Task { await store.resetCacheAndRescan() }
+                    VStack(alignment: .trailing, spacing: 3) {
+                        HStack {
+                            Button("Rescan everything") {
+                                Task { await store.resetCacheAndRescan() }
+                            }
+                            if store.isScanning {
+                                ProgressView().controlSize(.small)
+                            }
                         }
-                        if store.isScanning {
-                            ProgressView().controlSize(.small)
-                        }
+                        Text("Re-parses all transcripts on disk. Archived exact history of already-pruned sessions is kept.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
 
             Section("About") {
                 LabeledContent("Version", value: appVersion)
-                Text("All data stays on this Mac. Costs are estimated from Anthropic list prices; deleted session files keep their history from the local scan cache.")
+                Text("All data stays on this Mac. Costs are estimated from Anthropic list prices; deleted session files keep their exact history from a local archive that survives rescans.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
