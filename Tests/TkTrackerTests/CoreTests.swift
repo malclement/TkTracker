@@ -411,7 +411,9 @@ final class CoreTests {
         #expect(lines[0] == Substring(CSVExport.header))
 
         let df = DateFormatter()
-        df.calendar = .current
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = Calendar.current.timeZone
+        df.calendar = gregorian
         df.timeZone = Calendar.current.timeZone
         df.locale = Locale(identifier: "en_US_POSIX")
         df.dateFormat = "yyyy-MM-dd"
@@ -441,5 +443,93 @@ final class CoreTests {
         #expect(stats.chart.count == 2) // one day x two families
         let shareSum = stats.models.reduce(0) { $0 + $1.share }
         #expect(abs(shareSum - 1.0) < 1e-9)
+    }
+
+    // MARK: robustness & environment
+
+    @Test func hugeTokenCountsClampInsteadOfTrapping() throws {
+        // Token counts are untrusted input: near-Int64.max values across lines
+        // must clamp at the bounds, never trap and crash-loop every scan.
+        let big = Int64.max - 10
+        func hugeLine(_ id: String, _ req: String) -> String {
+            #"{"type":"assistant","timestamp":"2026-07-07T10:00:00.000Z","requestId":"\#(req)","message":{"id":"\#(id)","model":"claude-opus-4-8","usage":{"input_tokens":\#(big),"output_tokens":\#(big),"cache_read_input_tokens":\#(big),"cache_creation_input_tokens":\#(big)}}}"#
+        }
+        let url = try write([hugeLine("m1", "r1"), hugeLine("m2", "r2")])
+        let digest = try scan(url)
+        #expect(digest.totals.input == .max)
+        #expect(digest.totals.total == .max)
+        #expect(digest.lastContextTokens == .max)
+        #expect(digest.totals.messages == 2)
+    }
+
+    @Test func statsCacheHugeValuesDoNotTrap() throws {
+        let statsURL = dir.appendingPathComponent("stats-huge.json")
+        try #"""
+        {"dailyModelTokens":[{"date":"2026-01-10","tokensByModel":{"m":9223372036854775800,"n":9223372036854775800}}],
+         "modelUsage":{"m":{"inputTokens":1,"outputTokens":1,"cacheReadInputTokens":9223372036854775800,"cacheCreationInputTokens":9223372036854775800}}}
+        """#.write(to: statsURL, atomically: true, encoding: .utf8)
+        let digest = try #require(StatsCacheImport.historyDigest(statsURL: statsURL, transcriptDigests: []))
+        #expect(digest.totals.total == .max) // clamped, not crashed
+    }
+
+    @Test func contextWindows() {
+        #expect(Pricing.contextWindow(for: "claude-opus-4-8") == 200_000)
+        #expect(Pricing.contextWindow(for: "claude-fable-5") == 200_000)
+        #expect(Pricing.contextWindow(for: "claude-sonnet-4-5[1m]") == 1_000_000)
+    }
+
+    @Test func csvDatesStayGregorianOnNonGregorianSystems() throws {
+        var digest = FileDigest(path: "/a.jsonl", sessionId: "s", projectDir: "p")
+        var t = TokenTotals()
+        t.input = 1
+        t.messages = 1
+        let epoch = try #require(JSONLParser.epoch(fromISO8601: "2026-07-07T12:00:00.000Z"))
+        digest.buckets = [HourBucket(hour: Int64(epoch / 3600) * 3600, model: "claude-opus-4-8", totals: t)]
+
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = try #require(TimeZone(identifier: "UTC"))
+        let csv = CSVExport.dailyByModel(
+            digests: [digest], range: .all,
+            now: Date(timeIntervalSince1970: epoch), calendar: buddhist
+        )
+        #expect(csv.contains("\n2026-07-07,")) // not Buddhist year 2569
+    }
+
+    @Test func statsCacheImportParsesGregorianOnNonGregorianSystems() throws {
+        let statsURL = dir.appendingPathComponent("stats-cal.json")
+        try #"""
+        {"dailyModelTokens":[{"date":"2026-01-10","tokensByModel":{"claude-opus-4-6":1000}}]}
+        """#.write(to: statsURL, atomically: true, encoding: .utf8)
+
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = try #require(TimeZone(identifier: "UTC"))
+        let digest = try #require(StatsCacheImport.historyDigest(
+            statsURL: statsURL, transcriptDigests: [], calendar: buddhist))
+
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = try #require(TimeZone(identifier: "UTC"))
+        let jan10 = try #require(DateComponents(
+            calendar: gregorian, timeZone: gregorian.timeZone, year: 2026, month: 1, day: 10
+        ).date)
+        let expectedHour = Int64(jan10.addingTimeInterval(12 * 3600).timeIntervalSince1970 / 3600) * 3600
+        #expect(digest.buckets.first?.hour == expectedHour) // 2026 CE, not 1483 CE
+    }
+
+    @Test func claudeConfigDirResolution() {
+        let defaultEnv: [String: String] = [:]
+        #expect(ScanCore.configRoot(environment: defaultEnv).path.hasSuffix("/.claude"))
+        #expect(ScanCore.defaultRoot(environment: defaultEnv).path.hasSuffix("/.claude/projects"))
+        #expect(ScanCore.defaultCacheURL(environment: defaultEnv).lastPathComponent == "scan-cache.json")
+
+        let custom = ["CLAUDE_CONFIG_DIR": "/tmp/other-claude"]
+        #expect(ScanCore.configRoot(environment: custom).path == "/tmp/other-claude")
+        #expect(ScanCore.defaultRoot(environment: custom).path == "/tmp/other-claude/projects")
+
+        // A custom profile gets its own scan cache, stable per root, distinct across roots.
+        let customCache = ScanCore.defaultCacheURL(environment: custom).lastPathComponent
+        #expect(customCache.hasPrefix("scan-cache-") && customCache != "scan-cache.json")
+        #expect(ScanCore.defaultCacheURL(environment: custom).lastPathComponent == customCache)
+        #expect(ScanCore.defaultCacheURL(environment: ["CLAUDE_CONFIG_DIR": "/tmp/third"])
+            .lastPathComponent != customCache)
     }
 }

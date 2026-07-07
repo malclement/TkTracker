@@ -272,7 +272,7 @@ enum StatsBuilder {
                 let key = ChartKey(date: bucketDate, modelName: shortName)
                 var agg = chartAgg[key] ?? ChartAgg()
                 agg.cost += bucketCost
-                agg.tokens += bucket.totals.total
+                agg.tokens = agg.tokens.saturatingAdding(bucket.totals.total)
                 chartAgg[key] = agg
             }
 
@@ -367,7 +367,9 @@ enum StatsBuilder {
         sessionRows.sort { ($0.lastActive ?? .distantPast) > ($1.lastActive ?? .distantPast) }
         liveRows.sort { ($0.lastActive ?? .distantPast) > ($1.lastActive ?? .distantPast) }
 
-        let promptTokens = rangeTotals.input + rangeTotals.cacheRead + rangeTotals.cacheWrite
+        let promptTokens = rangeTotals.input
+            .saturatingAdding(rangeTotals.cacheRead)
+            .saturatingAdding(rangeTotals.cacheWrite)
         let hitRate = promptTokens > 0 ? Double(rangeTotals.cacheRead) / Double(promptTokens) : 0
 
         let nowHour = Int64(nowEpoch / 3600) * 3600

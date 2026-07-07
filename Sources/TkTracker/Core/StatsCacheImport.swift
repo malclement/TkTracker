@@ -14,8 +14,7 @@ enum StatsCacheImport {
     static let historyProjectDir = "claude-code-stats-history"
 
     static func defaultURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/stats-cache.json")
+        ScanCore.configRoot().appendingPathComponent("stats-cache.json")
     }
 
     static func historyDigest(
@@ -55,21 +54,21 @@ enum StatsCacheImport {
             let noon = calendar.startOfDay(for: parsed).addingTimeInterval(12 * 3600)
             let hour = Int64(noon.timeIntervalSince1970 / 3600) * 3600
 
-            let dayIO = byModel.values.reduce(0, +)
+            let dayIO = byModel.values.reduce(Int64(0)) { $0.saturatingAdding($1) }
             let dayMessages = messagesByDay[date] ?? 0
             for (model, io) in byModel where io > 0 {
                 let split = splits[model] ?? splits[Self.aggregateKey] ?? .neutral
                 var t = TokenTotals()
-                t.input = Int64((Double(io) * split.fIn).rounded())
-                t.output = io - t.input // keep in+out equal to the recorded value
-                t.cacheRead = Int64((Double(io) * split.readPerIO).rounded())
+                t.input = .saturating((Double(io) * split.fIn).rounded())
+                t.output = io.saturatingAdding(-t.input) // keep in+out equal to the recorded value
+                t.cacheRead = .saturating((Double(io) * split.readPerIO).rounded())
                 // TTL split is not recorded; 5m (1.25x) is the conservative assumption.
-                t.cacheWrite5m = Int64((Double(io) * split.writePerIO).rounded())
+                t.cacheWrite5m = .saturating((Double(io) * split.writePerIO).rounded())
                 t.messages = dayIO > 0
-                    ? Int((Double(dayMessages) * Double(io) / Double(dayIO)).rounded())
+                    ? Int(Int64.saturating((Double(dayMessages) * Double(io) / Double(dayIO)).rounded()))
                     : 0
                 buckets.append(HourBucket(hour: hour, model: model, totals: t))
-                ioByModel[model, default: 0] += io
+                ioByModel[model, default: 0] = ioByModel[model, default: 0].saturatingAdding(io)
                 firstTs = min(firstTs ?? Double(hour), Double(hour))
                 lastTs = max(lastTs ?? Double(hour), Double(hour))
             }
@@ -123,9 +122,14 @@ enum StatsCacheImport {
 
     // MARK: - Dates
 
+    /// Stats-cache day strings are Gregorian regardless of the system calendar —
+    /// only the time zone follows the caller (a Buddhist-calendar formatter would
+    /// read "2026-06-15" as 1483 CE and anchor history five centuries back).
     private static func makeDayFormatter(calendar: Calendar) -> DateFormatter {
         let f = DateFormatter()
-        f.calendar = calendar
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        f.calendar = gregorian
         f.timeZone = calendar.timeZone
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"

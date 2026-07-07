@@ -14,8 +14,12 @@ enum CSVExport {
     ) -> String {
         let start = range.start(now: now, calendar: calendar)?.timeIntervalSince1970
 
+        // Dates must stay Gregorian whatever the system calendar (a Buddhist-
+        // calendar formatter would emit "2569-…"); only the time zone is local.
         let formatter = DateFormatter()
-        formatter.calendar = calendar
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        formatter.calendar = gregorian
         formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"

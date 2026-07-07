@@ -9,6 +9,9 @@ actor UsageEngine {
     private var claims: [String: String] = [:]
     private var dirty = false
     private var lastSave = Date.distantPast
+    /// Bumped by reset(). A refresh whose detached scan started before a reset
+    /// must drop its result, or it would resurrect the state the user purged.
+    private var generation = 0
 
     init(core: ScanCore = ScanCore(root: ScanCore.defaultRoot(), cacheURL: ScanCore.defaultCacheURL())) {
         self.core = core
@@ -25,10 +28,12 @@ actor UsageEngine {
     func refresh() async -> [FileDigest] {
         let digestsSnapshot = digests
         let claimsSnapshot = claims
+        let startGeneration = generation
         let core = self.core
         let result = await Task.detached(priority: .userInitiated) {
             core.refreshed(digests: digestsSnapshot, claims: claimsSnapshot)
         }.value
+        guard startGeneration == generation else { return Array(digests.values) }
         digests = result.digests
         claims = result.claims
         if result.changed {
@@ -46,6 +51,7 @@ actor UsageEngine {
     }
 
     func reset() async -> [FileDigest] {
+        generation += 1
         core.clearCache()
         digests = [:]
         claims = [:]

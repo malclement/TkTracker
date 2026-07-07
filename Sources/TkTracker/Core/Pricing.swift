@@ -68,11 +68,11 @@ enum Pricing {
         return uncached - actual
     }
 
-    /// Context window used for the session context gauge.
+    /// Context window used for the session context gauge. Claude Code appends
+    /// "[1m]" to the model id when the 1M-token window is active; everything
+    /// else runs the standard 200K window.
     static func contextWindow(for model: String) -> Int64 {
-        let m = model.lowercased()
-        if m.contains("haiku") || m.contains("claude-3") { return 200_000 }
-        return 1_000_000
+        model.lowercased().contains("[1m]") ? 1_000_000 : 200_000
     }
 }
 

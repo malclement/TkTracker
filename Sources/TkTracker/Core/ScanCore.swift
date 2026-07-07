@@ -35,19 +35,41 @@ struct ScanCore: Sendable {
     let root: URL
     let cacheURL: URL
 
-    static func defaultRoot() -> URL {
-        if let custom = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], !custom.isEmpty {
+    /// Claude Code's data directory: `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
+    /// Everything that locates Claude Code data (transcripts, stats cache) must
+    /// resolve through here so a custom profile is honored consistently.
+    static func configRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let custom = environment["CLAUDE_CONFIG_DIR"], !custom.isEmpty {
             return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
-                .appendingPathComponent("projects", isDirectory: true)
         }
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects", isDirectory: true)
+            .appendingPathComponent(".claude", isDirectory: true)
     }
 
-    static func defaultCacheURL() -> URL {
+    static func defaultRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        configRoot(environment: environment).appendingPathComponent("projects", isDirectory: true)
+    }
+
+    /// The scan cache is namespaced per data root: the default root keeps the
+    /// historical file name, a `CLAUDE_CONFIG_DIR` override gets its own cache so
+    /// alternating profiles never merge each other's digests into one history.
+    static func defaultCacheURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
+        if environment["CLAUDE_CONFIG_DIR"]?.isEmpty == false {
+            let suffix = stableHash(defaultRoot(environment: environment).path)
+            return base.appendingPathComponent("TkTracker/scan-cache-\(suffix).json")
+        }
         return base.appendingPathComponent("TkTracker/scan-cache.json")
+    }
+
+    /// FNV-1a — deterministic across launches, unlike `Hasher`.
+    static func stableHash(_ string: String) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in string.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+        }
+        return String(format: "%016llx", hash)
     }
 
     struct FileMeta: Sendable {

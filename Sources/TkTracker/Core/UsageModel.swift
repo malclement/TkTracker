@@ -10,18 +10,40 @@ struct TokenTotals: Codable, Sendable, Equatable {
     var messages: Int = 0
     var webSearches: Int = 0
 
-    var cacheWrite: Int64 { cacheWrite5m + cacheWrite1h }
-    var total: Int64 { input + output + cacheRead + cacheWrite }
+    var cacheWrite: Int64 { cacheWrite5m.saturatingAdding(cacheWrite1h) }
+    var total: Int64 {
+        input.saturatingAdding(output).saturatingAdding(cacheRead).saturatingAdding(cacheWrite)
+    }
     var isEmpty: Bool { total == 0 && messages == 0 }
 
     mutating func add(_ other: TokenTotals) {
-        input += other.input
-        output += other.output
-        cacheRead += other.cacheRead
-        cacheWrite5m += other.cacheWrite5m
-        cacheWrite1h += other.cacheWrite1h
-        messages += other.messages
-        webSearches += other.webSearches
+        input = input.saturatingAdding(other.input)
+        output = output.saturatingAdding(other.output)
+        cacheRead = cacheRead.saturatingAdding(other.cacheRead)
+        cacheWrite5m = cacheWrite5m.saturatingAdding(other.cacheWrite5m)
+        cacheWrite1h = cacheWrite1h.saturatingAdding(other.cacheWrite1h)
+        messages = messages.saturatingAdding(other.messages)
+        webSearches = webSearches.saturatingAdding(other.webSearches)
+    }
+}
+
+/// Token counts come from untrusted files (transcripts, Claude Code's stats
+/// cache); arithmetic on them clamps at the integer bounds instead of trapping
+/// so one corrupt or crafted line can never crash a scan.
+extension FixedWidthInteger {
+    func saturatingAdding(_ other: Self) -> Self {
+        let (sum, overflow) = addingReportingOverflow(other)
+        return overflow ? (other < 0 ? .min : .max) : sum
+    }
+}
+
+extension Int64 {
+    /// Double → Int64 without the trap on out-of-range values; NaN maps to 0.
+    static func saturating(_ value: Double) -> Int64 {
+        guard !value.isNaN else { return 0 }
+        if value >= Double(Int64.max) { return .max }
+        if value <= Double(Int64.min) { return .min }
+        return Int64(value)
     }
 }
 
@@ -85,5 +107,8 @@ struct DigestCache: Codable, Sendable {
     var digests: [String: FileDigest]
     /// Global (messageId:requestId) → owning file path. Session resumes/forks copy
     /// history lines into new files; the claim table keeps each API call counted once.
+    /// Grows for as long as history is retained: a claim can only be pruned once its
+    /// message can no longer reappear in a new file, and resumes may copy arbitrarily
+    /// old lines, so dropping entries would reopen double counting.
     var claims: [String: String]
 }

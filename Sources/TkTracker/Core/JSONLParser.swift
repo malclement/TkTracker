@@ -61,10 +61,12 @@ enum JSONLParser {
                     cursor = work.index(after: nl)
                 }
                 if cursor < work.endIndex { remainder = Data(work[cursor...]) }
+                // Commit per chunk so a read error mid-file never leaves parsed
+                // buckets ahead of the offset (which would double count on retry).
+                // A trailing partial line (no newline yet) is a write in progress —
+                // `consumed` never advances past the last complete line.
+                state.digest.offset = consumed
             }
-            // A trailing partial line (no newline yet) is a write in progress —
-            // leave it for the next scan by not advancing past the last newline.
-            state.digest.offset = consumed
         } catch {
             // Keep whatever was parsed; offset only advanced past complete lines.
         }
@@ -175,7 +177,8 @@ enum JSONLParser {
         state.digest.firstTs = min(state.digest.firstTs ?? ts, ts)
         state.digest.lastTs = max(state.digest.lastTs ?? ts, ts)
         state.digest.lastModel = model
-        state.digest.lastContextTokens = t.input + t.cacheRead + t.cacheWrite5m + t.cacheWrite1h
+        state.digest.lastContextTokens = t.input.saturatingAdding(t.cacheRead)
+            .saturatingAdding(t.cacheWrite5m).saturatingAdding(t.cacheWrite1h)
     }
 
     // MARK: - Timestamps
