@@ -59,6 +59,10 @@ struct SettingsView: View {
 
             Section("About") {
                 LabeledContent("Version", value: appVersion)
+                LabeledContent("Source") {
+                    Link("github.com/malclement/TkTracker",
+                         destination: URL(string: "https://github.com/malclement/TkTracker")!)
+                }
                 Text("All data stays on this Mac. Costs are estimated from Anthropic list prices; deleted session files keep their exact history from a local archive that survives rescans.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

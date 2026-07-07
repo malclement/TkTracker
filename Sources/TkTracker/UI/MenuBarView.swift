@@ -3,11 +3,13 @@ import SwiftUI
 struct MenuBarView: View {
     @Environment(UsageStore.self) private var store
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let stats = store.stats
+        let live = stats.activeSessions > 0
         VStack(alignment: .leading, spacing: 0) {
-            header
+            header(stats)
 
             if !store.dataDirExists || (stats.allTimeCost == 0 && stats.totals.messages == 0 && !store.hasScanned) {
                 EmptyDataView(scanning: store.isScanning,
@@ -17,7 +19,7 @@ struct MenuBarView: View {
                 hero(stats)
                 HourSparkline(points: stats.hourly24, currentHour: currentHour)
                     .padding(.horizontal, 16)
-                    .padding(.top, 10)
+                    .padding(.top, 12)
 
                 if let block = stats.block, block.isActive {
                     Divider().padding(.vertical, 10)
@@ -34,54 +36,82 @@ struct MenuBarView: View {
         }
         .padding(.vertical, 12)
         .frame(width: 360)
+        .background(alignment: .top) { glow(live) }
     }
 
     private var currentHour: Date {
         Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970 / 3600) * 3600)
     }
 
-    private var header: some View {
-        HStack(spacing: 6) {
-            Text("TKTRACKER")
-                .font(.caption2.weight(.semibold))
-                .kerning(1.2)
-                .foregroundStyle(.secondary)
-            if store.stats.activeSessions > 0 {
-                LiveDot()
-                Text("\(store.stats.activeSessions) live")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+    /// The popover's tell: a soft accent wash that breathes in while
+    /// sessions are burning tokens and fades out when the desk goes quiet.
+    private func glow(_ live: Bool) -> some View {
+        RadialGradient(
+            colors: [Theme.accent.opacity(0.16), .clear],
+            center: UnitPoint(x: 0.5, y: -0.2),
+            startRadius: 12,
+            endRadius: 240
+        )
+        .frame(height: 190)
+        .opacity(live ? 1 : 0)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 1.2), value: live)
+        .allowsHitTesting(false)
+    }
+
+    private func header(_ stats: DashboardStats) -> some View {
+        HStack(spacing: 8) {
+            Eyebrow(text: Date.now.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
             Spacer()
+            if stats.activeSessions > 0 {
+                HStack(spacing: 4.5) {
+                    LiveDot()
+                    Text("\(stats.activeSessions) live")
+                        .font(.caption2.weight(.semibold))
+                }
+                .foregroundStyle(Theme.good)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2.5)
+                .background(Capsule().fill(Theme.good.opacity(0.12)))
+            }
             if store.isScanning {
                 ProgressView().controlSize(.small)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 8)
+        .padding(.bottom, 10)
     }
 
     private func hero(_ stats: DashboardStats) -> some View {
-        var subtitle = "today · \(Format.tokens(stats.todayTotals.total)) tokens · \(stats.todayTotals.messages) msgs"
-        if stats.activeSessions > 0, stats.burnRatePerHour > 0.01 {
-            subtitle += " · ≈\(Format.money(stats.burnRatePerHour))/h"
-        }
-        return VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(Format.money(stats.todayCost))
-                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .font(Theme.metric(38))
                 .contentTransition(.numericText(value: stats.todayCost))
                 .animation(.snappy(duration: 0.4), value: stats.todayCost)
-            Text(subtitle)
+            Text("\(Format.tokens(stats.todayTotals.total)) tokens · \(stats.todayTotals.messages) messages today")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if store.isOverBudget {
-                Label(
-                    "Over daily budget — \(Format.money(stats.todayCost)) of \(Format.money(store.dailyBudget))",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(Theme.serious)
-                .padding(.top, 3)
+
+            let showBurn = stats.activeSessions > 0 && stats.burnRatePerHour > 0.01
+            if showBurn || store.isOverBudget {
+                HStack(spacing: 6) {
+                    if showBurn {
+                        Chip(
+                            text: "\(Format.money(stats.burnRatePerHour))/h",
+                            tint: Theme.serious,
+                            icon: "flame.fill"
+                        )
+                        .help("Trailing-hour burn rate while sessions are active")
+                    }
+                    if store.isOverBudget {
+                        Chip(
+                            text: "Over \(Format.money(store.dailyBudget)) budget",
+                            tint: Theme.critical,
+                            icon: "exclamationmark.triangle.fill"
+                        )
+                        .help("Today's spend has crossed the daily budget set in Settings")
+                    }
+                }
+                .padding(.top, 6)
             }
         }
         .padding(.horizontal, 16)
@@ -89,19 +119,19 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private func liveSection(_ stats: DashboardStats) -> some View {
-        if stats.liveSessions.isEmpty {
-            Text("No active sessions")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 16)
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow(text: "Live sessions")
+            if stats.liveSessions.isEmpty {
+                Text("No active sessions — costs update live while Claude Code runs.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
                 ForEach(stats.liveSessions) { session in
                     HStack(spacing: 8) {
                         LiveDot()
                         VStack(alignment: .leading, spacing: 1) {
                             Text(session.title)
-                                .font(.callout)
+                                .font(.callout.weight(.medium))
                                 .lineLimit(1)
                             Text("\(session.projectName) · \(session.modelShortName)")
                                 .font(.caption)
@@ -117,47 +147,46 @@ struct MenuBarView: View {
                         }
                     }
                 }
+                .animation(.snappy(duration: 0.4), value: stats.liveSessions.map(\.cost))
             }
-            .animation(.snappy(duration: 0.4), value: stats.liveSessions.map(\.cost))
-            .padding(.horizontal, 16)
         }
+        .padding(.horizontal, 16)
     }
 
     private func footer(_ stats: DashboardStats) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Button {
-                    openWindow(id: "dashboard")
-                    WindowFocus.promote()
-                } label: {
-                    Label("Dashboard", systemImage: "rectangle.on.rectangle")
-                }
-                .controlSize(.small)
-                .keyboardShortcut("d", modifiers: .command)
-
-                Text("All time \(Format.money(stats.allTimeCost))")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-
-                Spacer()
-
-                SettingsLink {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .help("Settings")
-
-                Button {
-                    NSApp.terminate(nil)
-                } label: {
-                    Image(systemName: "power")
-                }
-                .buttonStyle(.borderless)
-                .keyboardShortcut("q", modifiers: .command)
-                .help("Quit TkTracker")
+        HStack(spacing: 10) {
+            Button {
+                openWindow(id: "dashboard")
+                WindowFocus.promote()
+            } label: {
+                Label("Dashboard", systemImage: "rectangle.on.rectangle")
             }
-            .padding(.horizontal, 16)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .keyboardShortcut("d", modifiers: .command)
+
+            Text("All time \(Format.money(stats.allTimeCost))")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            Spacer()
+
+            SettingsLink {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Settings")
+
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Image(systemName: "power")
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut("q", modifiers: .command)
+            .help("Quit TkTracker")
         }
-        .padding(.top, 2)
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
     }
 }

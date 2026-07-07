@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings → "Rescan everything" re-parses everything on disk but keeps the
   archived exact history of already-pruned sessions (the UI says so). Deleting
   the Application Support folder remains the full purge.
+- Full visual redesign toward a modern, native macOS look:
+  - the menu bar popover gains a soft accent glow while sessions are live, a
+    date header with a live-session pill, burn-rate / over-budget chips, and a
+    time-labeled 24-hour activity meter
+  - the 5-hour block gauge is drawn as five segments — one per hour
+  - dashboard controls (range picker, CSV export, session search) moved into
+    the native window toolbar; the sidebar footer shows the all-time total and
+    a privacy note
+  - cards now sit elevated on a recessed canvas with hairline strokes and soft
+    shadows; stat tiles gain icons and a tinted "vs yesterday" delta chip
+  - the model-share donut is hover-explorable: slices highlight and the center
+    readout switches to the hovered model
+  - tables go full-bleed with alternating row backgrounds and proper empty
+    states; the models pricing note becomes a bottom bar
+  - chart series colors are untouched (the CVD-validated palette is
+    load-bearing)
 
 ## [1.2.0] - 2026-07-07
 
