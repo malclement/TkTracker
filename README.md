@@ -1,5 +1,10 @@
 # TkTracker
 
+[![CI](https://github.com/malclement/TkTracker/actions/workflows/ci.yml/badge.svg)](https://github.com/malclement/TkTracker/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![macOS 15+](https://img.shields.io/badge/macOS-15%2B-111)
+![Swift 6](https://img.shields.io/badge/Swift-6-F05138)
+
 A native macOS menu bar app that tracks Claude Code token usage and cost, live.
 
 TkTracker watches `~/.claude/projects`, parses every session's JSONL transcript,
@@ -48,7 +53,11 @@ per-project / per-session / per-model breakdowns. Everything stays on your Mac.
 
 ## Install
 
-Requires macOS 15+ and the Xcode Command Line Tools (`xcode-select --install`).
+Requires macOS 15+.
+
+### From source (recommended)
+
+With the Xcode Command Line Tools installed (`xcode-select --install`):
 
 ```sh
 make app        # build dist/TkTracker.app (release, icon, ad-hoc signed)
@@ -56,15 +65,28 @@ make install    # copy it to /Applications
 make run        # or just launch the built bundle
 ```
 
-Enable **Launch at login** in Settings (⚙ in the popover) once installed.
+Other targets: `make test` (unit tests), `make build` (debug), `make zip`
+(distributable zip), `make clean`.
 
-Other targets: `make test` (unit tests), `make build` (debug), `make clean`.
+### From a release
+
+Download `TkTracker-<version>.zip` from the
+[latest release](https://github.com/malclement/TkTracker/releases/latest),
+unzip, and move `TkTracker.app` to `/Applications`. The app is ad-hoc signed,
+not notarized, so clear the quarantine flag once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/TkTracker.app
+```
+
+Enable **Launch at login** in Settings (⚙ in the popover) once installed.
 
 ## CLI
 
 ```sh
 .build/release/TkTracker report            # multi-range summary
 .build/release/TkTracker report --json --range month
+.build/release/TkTracker --version
 ```
 
 ## How costs are computed
@@ -124,3 +146,18 @@ a series, and identity is never carried by color alone.
 
 TkTracker reads local JSONL files only. Nothing leaves your machine — no
 network access, no telemetry.
+
+## Contributing
+
+Bug reports, model-pricing updates, and PRs are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md). Notable changes are tracked in the
+[changelog](CHANGELOG.md); security reports go through
+[SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Clément Malige.
+
+TkTracker is an independent open-source project, not affiliated with or
+endorsed by Anthropic. "Claude" and "Claude Code" are trademarks of
+Anthropic, PBC.
