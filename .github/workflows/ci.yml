@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & test (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build zipped app bundle
+        run: make zip
+
+      # upload-artifact strips executable bits from bare directories, so
+      # upload the ditto-made zip to keep the .app launchable.
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: TkTracker-app
+          path: dist/TkTracker-*.zip
+          if-no-files-found: error

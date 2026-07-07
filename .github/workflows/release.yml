@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test
+
+      - name: Check tag matches bundle version
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Support/Info.plist)
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Info.plist version $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Build zipped app bundle
+        run: make zip
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/TkTracker-$VERSION.zip" \
+            --title "TkTracker $VERSION" \
+            --generate-notes \
+            --notes "$(cat <<'EOF'
+          > [!NOTE]
+          > The app is ad-hoc signed, not notarized. After unzipping and moving
+          > `TkTracker.app` to `/Applications`, clear the quarantine flag once:
+          > `xattr -dr com.apple.quarantine /Applications/TkTracker.app`
+          > — or build from source with `make install`.
+          EOF
+          )"

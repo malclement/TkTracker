@@ -1,0 +1,56 @@
+name: Bug report
+description: Something is wrong — a crash, wrong numbers, or broken UI
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: TkTracker version
+      description: "`TkTracker --version`, or Settings → About in the app"
+      placeholder: "1.2.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "15.5 (Sequoia)"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Built from source (make install / make app)
+        - Downloaded release zip
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: >
+        What did you expect, and what did you see instead? For accounting bugs
+        (wrong cost/tokens), a comparison point helps — e.g. figures from the
+        Anthropic console or another tool, and which range/model disagrees.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant data or logs
+      description: >
+        For parser issues, the offending JSONL line from ~/.claude/projects
+        with any sensitive message content redacted (only the `usage`,
+        `model`, `timestamp`, and id fields matter). For crashes, the report
+        from Console.app.
+      render: text
