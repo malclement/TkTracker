@@ -42,13 +42,16 @@ per-project / per-session / per-model breakdowns. Everything stays on your Mac.
   - subagent transcripts in nested session directories are included
 - **Fast** — incremental parsing resumes from a byte offset per file; unchanged
   files are never re-read. A full cold scan of 160MB+ takes under half a second;
-  warm refreshes are near-instant. History survives Claude Code's session cleanup
-  (deleted files keep their totals from the cache).
-- **Pre-cleanup history** — Claude Code deletes transcripts after ~30 days
-  (`cleanupPeriodDays`), but its aggregate stats file survives. TkTracker imports
-  it to reconstruct the pruned months: per-day, per-model input+output tokens
+  warm refreshes are near-instant.
+- **Exact history, forever** — once TkTracker has seen a transcript, its
+  precise numbers are archived locally and survive Claude Code's ~30-day
+  session cleanup, "Rescan everything", and scan-cache format bumps. From the
+  moment you start using the app, nothing is ever downgraded to an estimate.
+- **Pre-cleanup history** — for the months *before* first app use, Claude Code's
+  aggregate stats file (which outlives transcript cleanup) is imported to
+  reconstruct the pruned period: per-day, per-model input+output tokens
   expanded to full usage by each model's lifetime cache mix. Estimated, clearly
-  labeled ("Earlier history"), never overlapping exact transcript data, and
+  labeled ("Earlier history"), never overlapping exact data, and
   optional (Settings, or `--transcripts-only` on the CLI).
 
 ## Install
@@ -101,11 +104,13 @@ with standard cache multipliers. Caveats:
   makes those rows a slight overestimate.
 - Fast-mode premium pricing isn't modeled (tracked at standard rates).
 - Models without a known price are tracked in tokens and flagged "no pricing".
-- Days older than the oldest surviving transcript come from Claude Code's stats
+- Days older than the oldest exact record (surviving transcripts plus
+  TkTracker's local archive of pruned ones) come from Claude Code's stats
   cache and are **estimates**: the file records exact in+out tokens per day and
   model, and TkTracker adds cache traffic proportional to that model's lifetime
   read/write ratios (cache writes priced at the 5-minute rate). Everything from
-  surviving transcripts onward is exact.
+  the first exact record onward — in practice, everything since you started
+  using TkTracker — is exact.
 - Usage is bucketed by UTC hour. In time zones offset by fractional hours
   (India, Nepal, Newfoundland, …) up to 30–45 minutes around local midnight is
   attributed to the neighboring day; whole-hour zones are exact.
@@ -123,6 +128,8 @@ Sources/TkTracker
 │   │                        fast ISO8601 path, dedupe, hour×model buckets)
 │   ├── ScanCore.swift       discovery, change detection, parallel scan, claim
 │   │                        table (cross-file exactly-once), cache IO
+│   ├── HistoryArchive.swift durable exact record of pruned sessions; survives
+│   │                        cache resets so estimates never replace exact data
 │   ├── UsageEngine.swift    actor owning digests for the app
 │   ├── StatsBuilder.swift   pure aggregation: ranges, charts, blocks, rows
 │   ├── Pricing.swift        model pricing + context windows
@@ -134,7 +141,10 @@ Sources/TkTracker
 Per-file usage is aggregated into `(UTC hour, model)` buckets — compact enough
 to persist for every session ever, fine enough for daily charts, range filters
 and ccusage-style 5-hour billing blocks. The scan cache lives in
-`~/Library/Application Support/TkTracker/`.
+`~/Library/Application Support/TkTracker/`, next to `history-archive.json` —
+a durable copy of every pruned session's exact digest (and the claim entries
+its messages own) that re-seeds the scan state after a cache reset, so exact
+history can never regress to an estimate.
 
 Charts color by **model version**, not just family: hue encodes the family
 (Fable violet → Sonnet green → Opus blue → Haiku amber, in a CVD-validated
@@ -150,12 +160,13 @@ a series, and identity is never carried by color alone.
 TkTracker reads local JSONL files only. Nothing leaves your machine — no
 network access, no telemetry.
 
-Its scan cache (`~/Library/Application Support/TkTracker/`) stores the
-aggregated numbers plus the session metadata shown in the UI — session titles,
-the first line of each session's first prompt, project paths and git branch
-names — so history survives Claude Code's transcript cleanup. It never stores
-conversation content. Delete that folder (or use Settings → "Rescan
-everything") to purge it.
+Its scan cache and history archive (`~/Library/Application Support/TkTracker/`)
+store the aggregated numbers plus the session metadata shown in the UI —
+session titles, the first line of each session's first prompt, project paths
+and git branch names — so history survives Claude Code's transcript cleanup.
+They never store conversation content. Settings → "Rescan everything" rebuilds
+the scan cache from what's on disk but keeps the archive of already-pruned
+sessions; delete the folder to purge everything.
 
 ## Contributing
 
