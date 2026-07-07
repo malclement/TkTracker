@@ -10,7 +10,8 @@ struct MenuBarView: View {
             header
 
             if !store.dataDirExists || (stats.allTimeCost == 0 && stats.totals.messages == 0 && !store.hasScanned) {
-                EmptyDataView(scanning: store.isScanning, root: "~/.claude/projects")
+                EmptyDataView(scanning: store.isScanning,
+                              root: (store.dataRoot.path as NSString).abbreviatingWithTildeInPath)
                     .frame(height: 140)
             } else {
                 hero(stats)

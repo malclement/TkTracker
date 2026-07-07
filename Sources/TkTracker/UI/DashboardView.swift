@@ -179,7 +179,15 @@ struct OverviewView: View {
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = "tktracker-\(store.stats.range.rawValue).csv"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? Data(store.csvForCurrentRange().utf8).write(to: url)
+        do {
+            try Data(store.csvForCurrentRange().utf8).write(to: url)
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Export failed"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
     }
 
     private func coverageNote(_ stats: DashboardStats) -> String? {
