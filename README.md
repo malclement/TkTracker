@@ -9,18 +9,25 @@ per-project / per-session / per-model breakdowns. Everything stays on your Mac.
 
 ## Features
 
-- **Menu bar** — today's cost (or tokens) always visible, updating live via FSEvents
-  while sessions stream.
-- **Popover** — today's spend with an animated odometer, a 24-hour activity
-  sparkline, the current 5-hour billing block with time remaining, and live
-  sessions with per-session cost and a context-window gauge.
+- **Menu bar** — today's cost, tokens, or the current 5h block (cost + time left)
+  always visible, updating live via FSEvents while sessions stream.
+- **Popover** — today's spend with an animated odometer and a trailing-hour burn
+  rate while sessions are active, a 24-hour activity sparkline, the current
+  5-hour billing block with time remaining, and live sessions with per-session
+  cost and a context-window gauge.
+- **Daily budget** — set a USD threshold in Settings; crossing it flips the menu
+  bar icon to a warning, flags the popover, and posts one notification per day.
 - **Dashboard** — Today / 7D / 30D / 90D / All ranges:
-  - stacked spend-by-model chart (hover for a per-day breakdown), cost ↔ tokens toggle
+  - stacked spend-by-model chart (hover for a breakdown), cost ↔ tokens toggle;
+    buckets adapt to the span — hourly today, daily up to ~4 months, weekly beyond
+  - "vs yesterday by now" delta on today's spend tile
   - model share donut, prompt-cache hit rate and estimated savings
-  - sortable tables for projects, sessions (searchable, with `claude --resume`
-    copy in the context menu) and models
-- **CLI** — `TkTracker report [--json] [--range today|week|month|quarter|all]`
+  - sortable tables for projects (double-click to drill into its sessions),
+    sessions (searchable, with `claude --resume` copy in the context menu) and models
+  - CSV export of the current range (per day and model)
+- **CLI** — `TkTracker report [--json|--csv] [--range today|week|month|quarter|all]`
   prints the same numbers in the terminal, sharing the app's scan cache.
+  `CLAUDE_CONFIG_DIR` is honored for non-default data locations.
 - **Accurate accounting**
   - deduplicates multi-line assistant turns by `(messageId, requestId)`
   - a global claim table keeps usage counted **exactly once** even when session
@@ -104,9 +111,14 @@ to persist for every session ever, fine enough for daily charts, range filters
 and ccusage-style 5-hour billing blocks. The scan cache lives in
 `~/Library/Application Support/TkTracker/`.
 
-The chart palette (Fable violet → Sonnet aqua → Opus blue → Haiku yellow) is
-validated for color-vision-deficiency-safe adjacency in both light and dark
-modes; identity is never carried by color alone.
+Charts color by **model version**, not just family: hue encodes the family
+(Fable violet → Sonnet green → Opus blue → Haiku amber, in a CVD-validated
+stack order) and lightness encodes the generation — the newest version takes
+the strongest step, older ones recede toward the surface (e.g. Opus 4.8 deep
+blue → 4.5 light blue). Every ramp passed the ordinal palette checks (monotone
+lightness, visible step gaps, contrast floors) in both light and dark modes,
+colors are assigned from the all-time model set so range filters never repaint
+a series, and identity is never carried by color alone.
 
 ## Privacy
 
