@@ -202,6 +202,109 @@ final class CoreTests {
         #expect(seeded.claims["m1:r1"] == original.path)
     }
 
+    // MARK: history archive
+
+    @Test func historyArchiveSurvivesPruneAndReset() throws {
+        let root = dir.appendingPathComponent("root", isDirectory: true)
+        let proj = root.appendingPathComponent("proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: proj, withIntermediateDirectories: true)
+        let file = proj.appendingPathComponent("session-1.jsonl")
+        try (assistantLine(id: "m1", request: "r1") + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let core = ScanCore(root: root, cacheURL: dir.appendingPathComponent("cache.json"))
+        let archive = HistoryArchive(url: dir.appendingPathComponent("history-archive.json"))
+
+        // Live files never enter the archive — their data is re-derivable from disk.
+        let live = core.refreshed(digests: [:], claims: [:])
+        #expect(HistoryArchive.updated(archive.load(), digests: live.digests, claims: live.claims) == nil)
+
+        // Claude Code prunes the transcript: digest goes missing and is archived
+        // together with the claims its messages own.
+        try FileManager.default.removeItem(at: file)
+        let pruned = core.refreshed(digests: live.digests, claims: live.claims)
+        let updated = try #require(HistoryArchive.updated(
+            archive.load(), digests: pruned.digests, claims: pruned.claims
+        ))
+        archive.save(updated)
+        #expect(archive.load().digests[file.path]?.missing == true)
+        #expect(archive.load().claims["m1:r1"] == file.path)
+
+        // "Rescan everything": the scan cache is gone, the archive seeds it back.
+        var digests: [String: FileDigest] = [:]
+        var claims: [String: String] = [:]
+        HistoryArchive.seed(archive: archive.load(), intoDigests: &digests, claims: &claims)
+        let rescanned = core.refreshed(digests: digests, claims: claims)
+        let restored = try #require(rescanned.digests[file.path])
+        #expect(restored.missing)
+        #expect(restored.totals.input == 100)
+        #expect(restored.totals.messages == 1)
+
+        // Re-archiving the unchanged state is a no-op, so steady-state saves are skipped.
+        #expect(HistoryArchive.updated(updated, digests: rescanned.digests, claims: rescanned.claims) == nil)
+    }
+
+    @Test func historyArchiveClaimsBlockDoubleCountingAfterReset() throws {
+        // A resumed session copies a pruned original's lines. After a cache reset,
+        // only the archived claims stand between that copy and double counting.
+        let root = dir.appendingPathComponent("root", isDirectory: true)
+        let proj = root.appendingPathComponent("proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: proj, withIntermediateDirectories: true)
+
+        let prunedPath = proj.appendingPathComponent("original.jsonl").path
+        var prunedDigest = FileDigest(path: prunedPath, sessionId: "original", projectDir: "proj")
+        prunedDigest.missing = true
+        prunedDigest.buckets = [HourBucket(
+            hour: 1_780_000_000 / 3600 * 3600,
+            model: "claude-opus-4-8",
+            totals: TokenTotals(input: 100, output: 50, messages: 1)
+        )]
+        let archived = try #require(HistoryArchive.updated(
+            DigestCache(version: ScanCore.cacheVersion, digests: [:], claims: [:]),
+            digests: [prunedPath: prunedDigest],
+            claims: ["m1:r1": prunedPath]
+        ))
+
+        let resumed = proj.appendingPathComponent("resumed.jsonl")
+        try (assistantLine(id: "m1", request: "r1") + "\n"
+             + assistantLine(id: "m2", request: "r2", input: 5) + "\n")
+            .write(to: resumed, atomically: true, encoding: .utf8)
+
+        var digests: [String: FileDigest] = [:]
+        var claims: [String: String] = [:]
+        HistoryArchive.seed(archive: archived, intoDigests: &digests, claims: &claims)
+        let core = ScanCore(root: root, cacheURL: dir.appendingPathComponent("cache.json"))
+        let result = core.refreshed(digests: digests, claims: claims)
+
+        #expect(result.digests[resumed.path]?.totals.messages == 1)
+        #expect(result.digests[resumed.path]?.totals.input == 5)
+        #expect(result.claims["m1:r1"] == prunedPath)
+        #expect(result.digests.values.reduce(0) { $0 + $1.totals.messages } == 2)
+    }
+
+    @Test func historyArchiveSeedPrefersLiveState() {
+        var archivedDigest = FileDigest(path: "/a.jsonl", sessionId: "a", projectDir: "p")
+        archivedDigest.aiTitle = "stale"
+        var archivedOnly = FileDigest(path: "/b.jsonl", sessionId: "b", projectDir: "p")
+        archivedOnly.missing = true
+        let archive = DigestCache(
+            version: ScanCore.cacheVersion,
+            digests: ["/a.jsonl": archivedDigest, "/b.jsonl": archivedOnly],
+            claims: ["m1:r1": "/a.jsonl", "m2:r2": "/b.jsonl"]
+        )
+
+        var liveDigest = FileDigest(path: "/a.jsonl", sessionId: "a", projectDir: "p")
+        liveDigest.aiTitle = "fresh"
+        var digests = ["/a.jsonl": liveDigest]
+        var claims = ["m1:r1": "/elsewhere.jsonl"]
+        HistoryArchive.seed(archive: archive, intoDigests: &digests, claims: &claims)
+
+        #expect(digests["/a.jsonl"]?.aiTitle == "fresh")
+        #expect(digests["/b.jsonl"]?.missing == true)
+        #expect(claims["m1:r1"] == "/elsewhere.jsonl")
+        #expect(claims["m2:r2"] == "/b.jsonl")
+    }
+
     // MARK: stats-cache history import
 
     @Test func statsCacheHistoryImport() throws {

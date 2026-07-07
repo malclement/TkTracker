@@ -5,6 +5,28 @@ All notable changes to TkTracker are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **History archive**: the exact usage of every transcript TkTracker has seen
+  is now written to a durable local archive
+  (`~/Library/Application Support/TkTracker/history-archive.json`) the moment
+  Claude Code prunes the file. The archive re-seeds the scan state on launch
+  and after "Rescan everything", and also carries the claim-table entries its
+  sessions own so a post-reset rescan can't double-count messages that resumed
+  sessions copied from pruned originals. Net effect: the estimated
+  stats-cache "Earlier history" is permanently clipped to the days before you
+  started using TkTracker — everything after that stays exact, even across
+  cache resets and scan-cache format bumps. Per-`CLAUDE_CONFIG_DIR` profiles
+  get separate archives, matching the scan cache.
+
+### Changed
+
+- Settings → "Rescan everything" re-parses everything on disk but keeps the
+  archived exact history of already-pruned sessions (the UI says so). Deleting
+  the Application Support folder remains the full purge.
+
 ## [1.2.0] - 2026-07-07
 
 ### Added
