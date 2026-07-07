@@ -62,7 +62,7 @@ struct HourModelKey: Hashable, Sendable {
 
 /// Everything TkTracker remembers about one session file. Persisted in the scan cache,
 /// so unchanged files are never re-read and deleted sessions keep their history.
-struct FileDigest: Codable, Sendable, Identifiable {
+struct FileDigest: Codable, Sendable, Identifiable, Equatable {
     var path: String
     var size: Int64 = 0
     var mtime: Double = 0

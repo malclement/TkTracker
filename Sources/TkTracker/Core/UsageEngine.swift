@@ -5,6 +5,8 @@ import Foundation
 /// the actor on a detached task so the cooperative pool is never blocked.
 actor UsageEngine {
     private let core: ScanCore
+    private let archive: HistoryArchive
+    private var archiveCache = DigestCache(version: ScanCore.cacheVersion, digests: [:], claims: [:])
     private var digests: [String: FileDigest] = [:]
     private var claims: [String: String] = [:]
     private var dirty = false
@@ -13,15 +15,21 @@ actor UsageEngine {
     /// must drop its result, or it would resurrect the state the user purged.
     private var generation = 0
 
-    init(core: ScanCore = ScanCore(root: ScanCore.defaultRoot(), cacheURL: ScanCore.defaultCacheURL())) {
+    init(
+        core: ScanCore = ScanCore(root: ScanCore.defaultRoot(), cacheURL: ScanCore.defaultCacheURL()),
+        archive: HistoryArchive = HistoryArchive(url: HistoryArchive.defaultURL())
+    ) {
         self.core = core
+        self.archive = archive
     }
 
     /// Load the persisted cache so the UI can render instantly before the first scan.
     func bootstrap() -> [FileDigest] {
         let cache = core.loadCache()
+        archiveCache = archive.load()
         digests = cache.digests
         claims = cache.claims
+        HistoryArchive.seed(archive: archiveCache, intoDigests: &digests, claims: &claims)
         return Array(digests.values)
     }
 
@@ -36,6 +44,10 @@ actor UsageEngine {
         guard startGeneration == generation else { return Array(digests.values) }
         digests = result.digests
         claims = result.claims
+        if let updated = HistoryArchive.updated(archiveCache, digests: digests, claims: claims) {
+            archiveCache = updated
+            archive.save(updated)
+        }
         if result.changed {
             dirty = true
             saveIfDue()
@@ -50,11 +62,16 @@ actor UsageEngine {
         lastSave = Date()
     }
 
+    /// Clears the scan cache and re-parses everything on disk. The history
+    /// archive is deliberately kept: pruned transcripts can never be re-read,
+    /// so dropping their archived digests would downgrade those days to the
+    /// stats-cache estimate.
     func reset() async -> [FileDigest] {
         generation += 1
         core.clearCache()
         digests = [:]
         claims = [:]
+        HistoryArchive.seed(archive: archiveCache, intoDigests: &digests, claims: &claims)
         dirty = false
         return await refresh()
     }

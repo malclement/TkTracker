@@ -20,8 +20,16 @@ enum CLIReport {
             return 1
         }
         let cache = core.loadCache()
-        let result = core.refreshed(digests: cache.digests, claims: cache.claims)
+        let archive = HistoryArchive(url: HistoryArchive.defaultURL())
+        let archiveCache = archive.load()
+        var seededDigests = cache.digests
+        var seededClaims = cache.claims
+        HistoryArchive.seed(archive: archiveCache, intoDigests: &seededDigests, claims: &seededClaims)
+        let result = core.refreshed(digests: seededDigests, claims: seededClaims)
         if result.changed { core.saveCache(digests: result.digests, claims: result.claims) }
+        if let updated = HistoryArchive.updated(archiveCache, digests: result.digests, claims: result.claims) {
+            archive.save(updated)
+        }
         var all = Array(result.digests.values)
         if !arguments.contains("--transcripts-only"),
            let history = StatsCacheImport.historyDigest(transcriptDigests: all) {
@@ -112,8 +120,9 @@ enum CLIReport {
             sf.timeStyle = .none
             var line = "\n  History since \(sf.string(from: since))."
             if reference.hasEstimatedHistory {
-                line += " Days before the oldest surviving transcript are estimated from"
-                    + "\n  Claude Code's stats cache (transcripts are pruned after ~30 days;"
+                line += " Days before the oldest exact record are estimated from"
+                    + "\n  Claude Code's stats cache (transcripts are pruned after ~30 days,"
+                    + " but usage\n  TkTracker has already seen stays exact;"
                     + " pass --transcripts-only to exclude)."
             }
             print(line)
