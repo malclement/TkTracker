@@ -38,6 +38,7 @@ struct DashboardView: View {
                 Label(s.title, systemImage: s.icon).tag(s)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 185, max: 230)
+            .safeAreaInset(edge: .bottom) { sidebarFooter }
         } detail: {
             switch store.dashboardSection ?? .overview {
             case .overview: OverviewView()
@@ -46,35 +47,24 @@ struct DashboardView: View {
             case .models: ModelsView()
             }
         }
-        .navigationTitle("TkTracker")
         .onAppear { WindowFocus.promote() }
         .onDisappear { WindowFocus.demoteIfNoWindows() }
     }
-}
 
-struct SectionHeader<Trailing: View>: View {
-    let title: String
-    @ViewBuilder let trailing: Trailing
-
-    init(title: String, @ViewBuilder trailing: () -> Trailing) {
-        self.title = title
-        self.trailing = trailing()
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .font(.title2.weight(.semibold))
-            Spacer()
-            trailing
-            RangePicker()
+    private var sidebarFooter: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Eyebrow(text: "All time")
+            Text(Format.money(store.stats.allTimeCost))
+                .font(Theme.metric(17))
+                .contentTransition(.numericText())
+            Label("All data stays on this Mac", systemImage: "lock.fill")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 2)
         }
-    }
-}
-
-extension SectionHeader where Trailing == EmptyView {
-    init(title: String) {
-        self.init(title: title) { EmptyView() }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 }
 
@@ -106,40 +96,37 @@ struct OverviewView: View {
     @Environment(UsageStore.self) private var store
     @State private var metric: ChartMetric = .cost
     @State private var selectedDate: Date?
+    @State private var donutAngle: Double?
 
     var body: some View {
         let stats = store.stats
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(title: "Overview") {
-                    Button {
-                        exportCSV()
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Export current range as CSV (per day and model)")
-                }
-
                 HStack(alignment: .top, spacing: 12) {
                     StatTile(
                         label: "Spend",
                         value: Format.money(stats.cost),
-                        sub: spendSub(stats)
+                        icon: "dollarsign.circle",
+                        sub: spendSub(stats),
+                        delta: stats.range == .today ? stats.todayVsYesterday : nil,
+                        deltaLabel: "vs yesterday by now"
                     )
                     StatTile(
                         label: "Tokens",
                         value: Format.tokens(stats.totals.total),
+                        icon: "number",
                         sub: "\(Format.tokens(stats.totals.input)) in · \(Format.tokens(stats.totals.output)) out"
                     )
                     StatTile(
                         label: "Cache hit rate",
                         value: Format.percent(stats.cacheHitRate),
-                        sub: stats.cacheSavings > 0.005 ? "saved ≈\(Format.money(stats.cacheSavings))" : "of prompt tokens"
+                        icon: "bolt.fill",
+                        sub: stats.cacheHitRate > 0 ? "of prompt tokens" : "no cached prompts yet"
                     )
                     StatTile(
                         label: "Sessions",
                         value: String(stats.sessions.count),
+                        icon: "bubble.left.and.bubble.right",
                         sub: stats.activeSessions > 0 ? "\(stats.activeSessions) live now" : "in range"
                     )
                 }
@@ -156,22 +143,36 @@ struct OverviewView: View {
                 }
 
                 if let coverage = coverageNote(stats) {
-                    Text(coverage)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Image(systemName: "info.circle")
+                        Text(coverage)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
                 }
             }
             .padding(20)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Theme.canvas)
+        .navigationTitle("Overview")
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                RangePicker()
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    exportCSV()
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .help("Export current range as CSV (per day and model)")
+            }
+        }
     }
 
-    private func spendSub(_ stats: DashboardStats) -> String {
+    private func spendSub(_ stats: DashboardStats) -> String? {
         guard stats.range == .today else { return stats.range.label.lowercased() }
-        if let delta = stats.todayVsYesterday {
-            return "\(Format.signedPercent(delta)) vs yesterday by now"
-        }
-        return "since midnight"
+        return stats.todayVsYesterday == nil ? "since midnight" : nil
     }
 
     private func exportCSV() {
@@ -208,10 +209,12 @@ struct OverviewView: View {
 
     private func spendChart(_ stats: DashboardStats) -> some View {
         let names = presentModelNames(stats)
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(metric == .cost ? "Spend by model" : "Tokens by model")
-                    .font(.headline)
+                Eyebrow(
+                    text: metric == .cost ? "Spend by model" : "Tokens by model",
+                    icon: "chart.bar.fill"
+                )
                 Spacer()
                 Picker("Metric", selection: $metric) {
                     ForEach(ChartMetric.allCases) { Text($0.rawValue).tag($0) }
@@ -274,7 +277,7 @@ struct OverviewView: View {
                     .foregroundStyle(.secondary)
                 }
             }
-            .frame(height: 250)
+            .frame(height: 260)
         }
         .card()
     }
@@ -329,10 +332,14 @@ struct OverviewView: View {
                     .font(.caption.weight(.semibold).monospacedDigit())
             }
         }
-        .padding(8)
+        .padding(9)
         .frame(minWidth: 130)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(.separator.opacity(0.6)))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Theme.cardStroke, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.10), radius: 6, x: 0, y: 2)
     }
 
     private func selectionDateLabel(_ date: Date) -> String {
@@ -354,10 +361,10 @@ struct OverviewView: View {
         let index = Dictionary(uniqueKeysWithValues: stats.modelPalette.enumerated().map { ($1.name, $0) })
         let slices = byName.sorted { (index[$0.name] ?? 99) < (index[$1.name] ?? 99) }
         let names = slices.map(\.name)
+        let selected = selectedSlice(in: slices)
 
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Model share")
-                .font(.headline)
+            Eyebrow(text: "Model share", icon: "chart.pie.fill")
             if slices.isEmpty {
                 Text("No spend in range")
                     .font(.caption)
@@ -369,25 +376,33 @@ struct OverviewView: View {
                         SectorMark(
                             angle: .value("Cost", slice.cost),
                             innerRadius: .ratio(0.64),
+                            outerRadius: .ratio(selected == nil || selected?.name == slice.name ? 1.0 : 0.92),
                             angularInset: 1.4
                         )
                         .cornerRadius(2.5)
                         .foregroundStyle(by: .value("Model", slice.name))
+                        .opacity(selected == nil || selected?.name == slice.name ? 1 : 0.35)
                     }
                     .chartForegroundStyleScale(
                         domain: names,
                         range: names.map { store.colorScale.color(for: $0) }
                     )
                     .chartLegend(.hidden)
+                    .chartAngleSelection(value: $donutAngle)
+                    .animation(.smooth(duration: 0.25), value: selected?.name)
                     .frame(width: 148, height: 148)
                     .overlay {
                         VStack(spacing: 0) {
-                            Text(Format.money(stats.cost))
-                                .font(.system(size: 17, weight: .semibold, design: .rounded))
-                            Text("total")
+                            Text(Format.money(selected?.cost ?? stats.cost))
+                                .font(Theme.metric(17))
+                                .contentTransition(.numericText())
+                            Text(selected?.name ?? "total")
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                                .lineLimit(1)
                         }
+                        .frame(maxWidth: 86)
+                        .animation(.smooth(duration: 0.25), value: selected?.name)
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
@@ -405,6 +420,7 @@ struct OverviewView: View {
                                     .foregroundStyle(.tertiary)
                                     .frame(width: 34, alignment: .trailing)
                             }
+                            .opacity(selected == nil || selected?.name == m.shortName ? 1 : 0.45)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -415,23 +431,39 @@ struct OverviewView: View {
         .card()
     }
 
+    /// Maps the donut's angle selection back to a slice via cumulative cost.
+    private func selectedSlice(in slices: [(name: String, cost: Double)])
+        -> (name: String, cost: Double)? {
+        guard let donutAngle else { return nil }
+        var cumulative = 0.0
+        for slice in slices {
+            cumulative += slice.cost
+            if donutAngle <= cumulative { return slice }
+        }
+        return slices.last
+    }
+
     private func cacheCard(_ stats: DashboardStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Prompt cache")
-                .font(.headline)
+            Eyebrow(text: "Prompt cache", icon: "bolt.fill")
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(Format.percent(stats.cacheHitRate))
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .font(Theme.metric(22))
+                    .contentTransition(.numericText())
                 Text("of prompt tokens read from cache")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             ShareBar(fraction: stats.cacheHitRate, color: Theme.good)
-            Text(stats.cacheSavings > 0.005
-                 ? "≈\(Format.money(stats.cacheSavings)) saved vs uncached input"
-                 : "write premiums currently outweigh reads")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            if stats.cacheSavings > 0.005 {
+                Text("≈\(Format.money(stats.cacheSavings)) saved vs uncached input")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.good)
+            } else {
+                Text("write premiums currently outweigh reads")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
@@ -443,9 +475,7 @@ struct OverviewView: View {
             if let block = stats.block {
                 BlockGauge(block: block, now: stats.generatedAt)
             } else {
-                Text("Current 5h block")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Eyebrow(text: "Current 5h block", icon: "clock")
                 Text("No activity yet")
                     .font(.caption)
                     .foregroundStyle(.tertiary)

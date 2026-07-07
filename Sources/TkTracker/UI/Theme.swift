@@ -2,23 +2,26 @@ import SwiftUI
 import AppKit
 
 extension NSColor {
-    convenience init(hex: UInt32) {
+    convenience init(hex: UInt32, alpha: CGFloat = 1) {
         self.init(
             srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
             green: CGFloat((hex >> 8) & 0xFF) / 255,
             blue: CGFloat(hex & 0xFF) / 255,
-            alpha: 1
+            alpha: alpha
         )
     }
 }
 
 extension Color {
     /// Appearance-adaptive color; the palette is validated per mode, not auto-flipped.
-    static func adaptive(light: UInt32, dark: UInt32) -> Color {
+    static func adaptive(
+        light: UInt32, dark: UInt32,
+        lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1
+    ) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? NSColor(hex: dark)
-                : NSColor(hex: light)
+                ? NSColor(hex: dark, alpha: darkAlpha)
+                : NSColor(hex: light, alpha: lightAlpha)
         })
     }
 }
@@ -123,23 +126,58 @@ enum Theme {
         default: return critical
         }
     }
+
+    // MARK: Surfaces
+
+    /// Recessed canvas the dashboard cards sit on.
+    static let canvas = Color(nsColor: .underPageBackgroundColor)
+    /// Elevated card surface: solid white in light, a white lift over the canvas in dark.
+    static let cardFill = Color.adaptive(light: 0xFFFFFF, dark: 0xFFFFFF, darkAlpha: 0.065)
+    static let cardStroke = Color.adaptive(
+        light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.08, darkAlpha: 0.10)
+    static let cardShadow = Color.adaptive(
+        light: 0x000000, dark: 0x000000, lightAlpha: 0.07, darkAlpha: 0.30)
+    static let cardRadius: CGFloat = 12
+    /// Recessed track behind gauge/meter fills.
+    static let track = Color.adaptive(
+        light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.07, darkAlpha: 0.09)
+
+    // MARK: Type & ink
+
+    /// Numeral face for metric values; rounded to sit well next to SF Pro text.
+    static func metric(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+        .system(size: size, weight: weight, design: .rounded)
+    }
+
+    /// Vertical sheen for gauge and meter fills; flat chart series stay flat.
+    static func gaugeFill(_ color: Color) -> LinearGradient {
+        LinearGradient(
+            colors: [color, color.opacity(0.72)],
+            startPoint: .top, endPoint: .bottom
+        )
+    }
 }
 
 struct CardBackground: ViewModifier {
+    var padding: CGFloat = 16
+
     func body(content: Content) -> some View {
         content
-            .padding(14)
+            .padding(padding)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(.quaternary.opacity(0.35))
+                RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                    .fill(Theme.cardFill)
+                    .shadow(color: Theme.cardShadow, radius: 2.5, x: 0, y: 1)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.separator.opacity(0.5), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                    .strokeBorder(Theme.cardStroke, lineWidth: 1)
             )
     }
 }
 
 extension View {
-    func card() -> some View { modifier(CardBackground()) }
+    func card(padding: CGFloat = 16) -> some View {
+        modifier(CardBackground(padding: padding))
+    }
 }
