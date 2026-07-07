@@ -7,6 +7,8 @@ enum Main {
         switch args.first {
         case "report", "usage":
             exit(CLIReport.run(arguments: Array(args.dropFirst())))
+        case "--version", "-v", "version":
+            print("TkTracker \(AppVersion.current)")
         case "--help", "-h", "help":
             print("""
             TkTracker — Claude Code token & cost tracker for macOS
@@ -19,6 +21,8 @@ enum Main {
                   --csv emits per-day, per-model rows. By default the report blends
                   in estimated pre-cleanup history from Claude Code's stats cache;
                   --transcripts-only restricts it to exact transcript data.
+              --version
+                  Print the version and exit.
 
             Environment:
               CLAUDE_CONFIG_DIR   Override the Claude data directory
