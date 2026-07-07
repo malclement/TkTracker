@@ -20,6 +20,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Info.plist` now carries a real copyright string.
 
+### Fixed
+
+- Dates in CSV exports and the stats-cache history import are now forced to
+  the Gregorian calendar; on systems using a Buddhist/Japanese/… calendar the
+  CSV emitted era years and imported history was anchored centuries off.
+- `CLAUDE_CONFIG_DIR` now also applies to the stats-cache import (it only
+  affected transcript discovery), and each data root gets its own scan cache,
+  so alternating profiles no longer blend or merge each other's usage.
+- Token arithmetic clamps at the Int64 bounds instead of trapping — a corrupt
+  or crafted transcript line with huge token counts could previously crash the
+  app on every scan until the file was removed by hand.
+- Context gauge now assumes the standard 200K window unless the model id
+  carries Claude Code's `[1m]` marker; big sessions previously read ~5× low
+  and never triggered the gauge's warning colors.
+- A read error mid-scan no longer double counts the already-parsed lines of
+  that file on the next scan.
+- "Rescan everything" can no longer be silently undone by a refresh that was
+  already in flight when the reset started.
+- CSV export reports write failures instead of failing silently, and the
+  empty state shows the actual data directory when `CLAUDE_CONFIG_DIR` is set.
+
 ## [1.1.0] - 2026-07-07
 
 ### Added

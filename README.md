@@ -106,6 +106,9 @@ with standard cache multipliers. Caveats:
   model, and TkTracker adds cache traffic proportional to that model's lifetime
   read/write ratios (cache writes priced at the 5-minute rate). Everything from
   surviving transcripts onward is exact.
+- Usage is bucketed by UTC hour. In time zones offset by fractional hours
+  (India, Nepal, Newfoundland, …) up to 30–45 minutes around local midnight is
+  attributed to the neighboring day; whole-hour zones are exact.
 
 The parsing pipeline is verified byte-for-byte against an independent reference
 implementation over real data (exact match on cost, tokens and message count),
@@ -146,6 +149,13 @@ a series, and identity is never carried by color alone.
 
 TkTracker reads local JSONL files only. Nothing leaves your machine — no
 network access, no telemetry.
+
+Its scan cache (`~/Library/Application Support/TkTracker/`) stores the
+aggregated numbers plus the session metadata shown in the UI — session titles,
+the first line of each session's first prompt, project paths and git branch
+names — so history survives Claude Code's transcript cleanup. It never stores
+conversation content. Delete that folder (or use Settings → "Rescan
+everything") to purge it.
 
 ## Contributing
 
