@@ -15,6 +15,17 @@ struct SettingsView: View {
                 .pickerStyle(.inline)
             }
 
+            Section("Budget") {
+                TextField(
+                    "Daily budget (USD)",
+                    value: $store.dailyBudget,
+                    format: .number.precision(.fractionLength(0...2))
+                )
+                Text("0 disables. When today's cost crosses the budget, the menu bar icon switches to a warning and you get one notification per day (permission is requested the first time).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("General") {
                 Toggle("Launch at login", isOn: $store.launchAtLogin)
                 VStack(alignment: .leading, spacing: 3) {

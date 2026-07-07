@@ -36,7 +36,11 @@ struct ScanCore: Sendable {
     let cacheURL: URL
 
     static func defaultRoot() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let custom = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], !custom.isEmpty {
+            return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
+                .appendingPathComponent("projects", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects", isDirectory: true)
     }
 

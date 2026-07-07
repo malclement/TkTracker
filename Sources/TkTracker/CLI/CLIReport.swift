@@ -28,6 +28,11 @@ enum CLIReport {
             all.append(history)
         }
 
+        if arguments.contains("--csv") {
+            print(CSVExport.dailyByModel(digests: all, range: range ?? .all), terminator: "")
+            return 0
+        }
+
         if json {
             let stats = StatsBuilder.build(digests: all, range: range ?? .all)
             let encoder = JSONEncoder()

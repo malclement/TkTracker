@@ -35,7 +35,7 @@ private struct MenuBarLabel: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: "chart.bar.xaxis")
+            Image(systemName: store.isOverBudget ? "exclamationmark.triangle.fill" : "chart.bar.xaxis")
             if let title = store.menuBarTitle {
                 Text(title).monospacedDigit()
             }

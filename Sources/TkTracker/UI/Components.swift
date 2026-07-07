@@ -63,12 +63,12 @@ struct ContextGauge: View {
     }
 }
 
-struct FamilySwatch: View {
-    let family: ModelFamily
+struct Swatch: View {
+    let color: Color
 
     var body: some View {
         RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-            .fill(family.color)
+            .fill(color)
             .frame(width: 9, height: 9)
     }
 }

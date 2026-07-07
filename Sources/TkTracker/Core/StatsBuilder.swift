@@ -26,12 +26,35 @@ enum StatsRange: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+/// Granularity of the spend chart: hourly for Today, daily for short ranges,
+/// weekly once the span would exceed ~4 months of daily bars.
+enum ChartUnit: String, Codable, Sendable {
+    case hour, day, week
+
+    var seconds: TimeInterval {
+        switch self {
+        case .hour: return 3600
+        case .day: return 86_400
+        case .week: return 604_800
+        }
+    }
+}
+
 struct ChartPoint: Identifiable, Codable, Sendable {
     let date: Date
-    let family: ModelFamily
+    let modelName: String // short display name, e.g. "Opus 4.6"
     let cost: Double
     let tokens: Int64
-    var id: String { "\(date.timeIntervalSince1970)|\(family.rawValue)" }
+    var id: String { "\(date.timeIntervalSince1970)|\(modelName)" }
+}
+
+/// One entry per distinct model ever seen (all-time, not range-filtered), in stack
+/// order: family, then version ascending. Color assignment derives from this, so
+/// a model keeps its color no matter which range is selected.
+struct ModelPaletteEntry: Codable, Sendable, Hashable {
+    let name: String // short display name
+    let family: ModelFamily
+    let version: Double
 }
 
 struct HourPoint: Identifiable, Codable, Sendable {
@@ -103,7 +126,8 @@ struct DashboardStats: Codable, Sendable {
     var cacheHitRate: Double
     var activeSessions: Int
     var chart: [ChartPoint]
-    var chartIsHourly: Bool
+    var chartUnit: ChartUnit
+    var modelPalette: [ModelPaletteEntry]
     var hourly24: [HourPoint]
     var models: [ModelRow]
     var projects: [ProjectRow]
@@ -115,13 +139,18 @@ struct DashboardStats: Codable, Sendable {
     var allTimeCost: Double
     var dataSince: Date?
     var hasEstimatedHistory: Bool
+    /// Estimated spend per hour over the trailing hour (0 when idle).
+    var burnRatePerHour: Double
+    /// Today's cost vs yesterday at the same time of day, as a signed fraction.
+    var todayVsYesterday: Double?
 
     static let empty = DashboardStats(
         range: .today, generatedAt: .distantPast, totals: TokenTotals(), cost: 0,
-        cacheSavings: 0, cacheHitRate: 0, activeSessions: 0, chart: [], chartIsHourly: true,
-        hourly24: [], models: [], projects: [], sessions: [], liveSessions: [], block: nil,
-        todayCost: 0, todayTotals: TokenTotals(), allTimeCost: 0,
-        dataSince: nil, hasEstimatedHistory: false
+        cacheSavings: 0, cacheHitRate: 0, activeSessions: 0, chart: [], chartUnit: .hour,
+        modelPalette: [], hourly24: [], models: [], projects: [], sessions: [], liveSessions: [],
+        block: nil, todayCost: 0, todayTotals: TokenTotals(), allTimeCost: 0,
+        dataSince: nil, hasEstimatedHistory: false,
+        burnRatePerHour: 0, todayVsYesterday: nil
     )
 }
 
@@ -138,11 +167,20 @@ enum StatsBuilder {
         let nowEpoch = now.timeIntervalSince1970
         let rangeStart = range.start(now: now, calendar: calendar)?.timeIntervalSince1970
         let todayStart = calendar.startOfDay(for: now).timeIntervalSince1970
-        let chartIsHourly = range == .today
+
+        let chartUnit: ChartUnit
+        if range == .today {
+            chartUnit = .hour
+        } else {
+            // Buckets are sorted per digest, so the first one is each file's earliest.
+            let earliest = digests.compactMap { $0.buckets.first?.hour }.min().map(Double.init)
+            let spanDays = (nowEpoch - (rangeStart ?? earliest ?? nowEpoch)) / 86_400
+            chartUnit = spanDays > 120 ? .week : .day
+        }
 
         struct HourAgg { var totals = TokenTotals(); var cost = 0.0 }
         struct ChartAgg { var cost = 0.0; var tokens: Int64 = 0 }
-        struct ChartKey: Hashable { let date: Date; let family: ModelFamily }
+        struct ChartKey: Hashable { let date: Date; let modelName: String }
         struct ProjectAgg {
             var totals = TokenTotals()
             var cost = 0.0
@@ -167,8 +205,10 @@ enum StatsBuilder {
         var activeSessions = 0
         var minHour: Int64?
         var hasEstimatedHistory = false
+        var allModelIds: Set<String> = []
+        var shortNameCache: [String: String] = [:]
 
-        var dayCache: [Int64: Date] = [:] // UTC hour -> local day start
+        var bucketDateCache: [Int64: Date] = [:] // UTC hour -> local chart-bucket start
 
         for digest in digests {
             var inRange = TokenTotals()
@@ -181,6 +221,7 @@ enum StatsBuilder {
                 let bucketCost = Pricing.cost(model: bucket.model, totals: bucket.totals)
                 allTimeCost += bucketCost
                 minHour = min(minHour ?? bucket.hour, bucket.hour)
+                allModelIds.insert(bucket.model)
 
                 var hourAgg = hourAll[bucket.hour] ?? HourAgg()
                 hourAgg.totals.add(bucket.totals)
@@ -204,16 +245,31 @@ enum StatsBuilder {
                 savings += Pricing.cacheSavings(model: bucket.model, totals: bucket.totals)
 
                 let bucketDate: Date
-                if chartIsHourly {
+                if chartUnit == .hour {
                     bucketDate = Date(timeIntervalSince1970: Double(bucket.hour))
-                } else if let cached = dayCache[bucket.hour] {
+                } else if let cached = bucketDateCache[bucket.hour] {
                     bucketDate = cached
                 } else {
-                    let day = calendar.startOfDay(for: Date(timeIntervalSince1970: Double(bucket.hour)))
-                    dayCache[bucket.hour] = day
-                    bucketDate = day
+                    let date = Date(timeIntervalSince1970: Double(bucket.hour))
+                    let start: Date
+                    switch chartUnit {
+                    case .week:
+                        start = calendar.dateInterval(of: .weekOfYear, for: date)?.start
+                            ?? calendar.startOfDay(for: date)
+                    default:
+                        start = calendar.startOfDay(for: date)
+                    }
+                    bucketDateCache[bucket.hour] = start
+                    bucketDate = start
                 }
-                let key = ChartKey(date: bucketDate, family: ModelFamily(model: bucket.model))
+                let shortName: String
+                if let cached = shortNameCache[bucket.model] {
+                    shortName = cached
+                } else {
+                    shortName = ModelFamily.shortName(for: bucket.model)
+                    shortNameCache[bucket.model] = shortName
+                }
+                let key = ChartKey(date: bucketDate, modelName: shortName)
                 var agg = chartAgg[key] ?? ChartAgg()
                 agg.cost += bucketCost
                 agg.tokens += bucket.totals.total
@@ -243,13 +299,33 @@ enum StatsBuilder {
             }
         }
 
-        // Chart points in the fixed family order so stacking matches the validated palette adjacency.
+        // All-time palette in stack order: family (validated adjacency), then version
+        // ascending — so older generations sit below newer ones with receding steps.
         let familyIndex = Dictionary(uniqueKeysWithValues: ModelFamily.displayOrder.enumerated().map { ($1, $0) })
+        var paletteByName: [String: ModelPaletteEntry] = [:]
+        for id in allModelIds {
+            let name = shortNameCache[id] ?? ModelFamily.shortName(for: id)
+            if paletteByName[name] == nil {
+                paletteByName[name] = ModelPaletteEntry(
+                    name: name,
+                    family: ModelFamily(model: id),
+                    version: ModelFamily.version(of: id)
+                )
+            }
+        }
+        let modelPalette = paletteByName.values.sorted { a, b in
+            let fa = familyIndex[a.family] ?? 9, fb = familyIndex[b.family] ?? 9
+            if fa != fb { return fa < fb }
+            if a.version != b.version { return a.version < b.version }
+            return a.name < b.name
+        }
+        let paletteIndex = Dictionary(uniqueKeysWithValues: modelPalette.enumerated().map { ($1.name, $0) })
+
         let chart = chartAgg
-            .map { ChartPoint(date: $0.key.date, family: $0.key.family, cost: $0.value.cost, tokens: $0.value.tokens) }
+            .map { ChartPoint(date: $0.key.date, modelName: $0.key.modelName, cost: $0.value.cost, tokens: $0.value.tokens) }
             .sorted {
                 if $0.date != $1.date { return $0.date < $1.date }
-                return (familyIndex[$0.family] ?? 9) < (familyIndex[$1.family] ?? 9)
+                return (paletteIndex[$0.modelName] ?? 99) < (paletteIndex[$1.modelName] ?? 99)
             }
 
         let models = byModel
@@ -305,6 +381,27 @@ enum StatsBuilder {
             )
         }
 
+        // Trailing-hour spend: this hour so far plus the remainder-weighted previous hour.
+        let elapsedInHour = nowEpoch - Double(nowHour)
+        let burnRatePerHour = (hourAll[nowHour]?.cost ?? 0)
+            + (hourAll[nowHour - 3600]?.cost ?? 0) * max(0, 3600 - elapsedInHour) / 3600
+
+        // Yesterday's spend up to this time of day, boundary hour weighted by elapsed fraction.
+        let todayStartDate = Date(timeIntervalSince1970: todayStart)
+        let yesterdayStart = calendar.date(byAdding: .day, value: -1, to: todayStartDate)?
+            .timeIntervalSince1970 ?? (todayStart - 86_400)
+        let sameTimeYesterday = yesterdayStart + (nowEpoch - todayStart)
+        var yesterdayByNow = 0.0
+        for (hour, agg) in hourAll {
+            let h = Double(hour)
+            guard h >= yesterdayStart, h < sameTimeYesterday, h < todayStart else { continue }
+            let weight = h + 3600 <= sameTimeYesterday ? 1.0 : (sameTimeYesterday - h) / 3600
+            yesterdayByNow += agg.cost * weight
+        }
+        let todayVsYesterday: Double? = yesterdayByNow > 0.01
+            ? (todayCost - yesterdayByNow) / yesterdayByNow
+            : nil
+
         return DashboardStats(
             range: range,
             generatedAt: now,
@@ -314,7 +411,8 @@ enum StatsBuilder {
             cacheHitRate: hitRate,
             activeSessions: activeSessions,
             chart: chart,
-            chartIsHourly: chartIsHourly,
+            chartUnit: chartUnit,
+            modelPalette: modelPalette,
             hourly24: hourly24,
             models: models,
             projects: projects,
@@ -325,7 +423,9 @@ enum StatsBuilder {
             todayTotals: todayTotals,
             allTimeCost: allTimeCost,
             dataSince: minHour.map { Date(timeIntervalSince1970: Double($0)) },
-            hasEstimatedHistory: hasEstimatedHistory
+            hasEstimatedHistory: hasEstimatedHistory,
+            burnRatePerHour: burnRatePerHour,
+            todayVsYesterday: todayVsYesterday
         )
     }
 

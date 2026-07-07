@@ -22,13 +22,14 @@ extension ModelRow {
 struct ProjectsView: View {
     @Environment(UsageStore.self) private var store
     @State private var sortOrder = [KeyPathComparator(\ProjectRow.cost, order: .reverse)]
+    @State private var selection = Set<ProjectRow.ID>()
 
     private var rows: [ProjectRow] { store.stats.projects.sorted(using: sortOrder) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "Projects")
-            Table(rows, sortOrder: $sortOrder) {
+            Table(rows, selection: $selection, sortOrder: $sortOrder) {
                 TableColumn("Project", value: \.name) { p in
                     VStack(alignment: .leading, spacing: 1) {
                         Text(p.name)
@@ -69,6 +70,22 @@ struct ProjectsView: View {
                 .width(min: 100, ideal: 130, max: 170)
             }
             .tableStyle(.inset)
+            .contextMenu(forSelectionType: ProjectRow.ID.self) { ids in
+                if let row = rows.first(where: { ids.contains($0.id) }) {
+                    Button("Show Sessions") { store.showSessions(filteredBy: row.name) }
+                    if row.path.hasPrefix("~") || row.path.hasPrefix("/") {
+                        Button("Reveal in Finder") {
+                            let expanded = (row.path as NSString).expandingTildeInPath
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: expanded)])
+                        }
+                    }
+                }
+            } primaryAction: { ids in
+                // Double-click drills into the project's sessions.
+                if let row = rows.first(where: { ids.contains($0.id) }) {
+                    store.showSessions(filteredBy: row.name)
+                }
+            }
         }
         .padding(20)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -80,13 +97,12 @@ struct ProjectsView: View {
 struct SessionsView: View {
     @Environment(UsageStore.self) private var store
     @State private var sortOrder = [KeyPathComparator(\SessionRow.lastActiveSort, order: .reverse)]
-    @State private var search = ""
     @State private var selection = Set<SessionRow.ID>()
 
     private var rows: [SessionRow] {
         var r = store.stats.sessions
-        if !search.isEmpty {
-            let q = search.lowercased()
+        let q = store.sessionSearch.lowercased()
+        if !q.isEmpty {
             r = r.filter {
                 $0.title.lowercased().contains(q)
                     || $0.projectName.lowercased().contains(q)
@@ -97,11 +113,12 @@ struct SessionsView: View {
     }
 
     var body: some View {
+        @Bindable var store = store
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text("Sessions")
                     .font(.title2.weight(.semibold))
-                TextField("Filter by title, project or model", text: $search)
+                TextField("Filter by title, project or model", text: $store.sessionSearch)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 240)
                 Spacer()
@@ -124,7 +141,7 @@ struct SessionsView: View {
                 }
                 TableColumn("Model", value: \.modelShortName) { s in
                     HStack(spacing: 5) {
-                        FamilySwatch(family: s.family)
+                        Swatch(color: store.colorScale.color(for: s.modelShortName, family: s.family))
                         Text(s.modelShortName)
                             .font(.callout)
                     }
@@ -189,7 +206,7 @@ struct ModelsView: View {
             Table(rows, sortOrder: $sortOrder) {
                 TableColumn("Model", value: \.shortName) { m in
                     HStack(spacing: 7) {
-                        FamilySwatch(family: m.family)
+                        Swatch(color: store.colorScale.color(for: m.shortName, family: m.family))
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 6) {
                                 Text(m.shortName)
@@ -232,7 +249,7 @@ struct ModelsView: View {
                 .width(min: 66, ideal: 78, max: 100)
                 TableColumn("Share", value: \.share) { m in
                     HStack(spacing: 7) {
-                        ShareBar(fraction: m.share, color: m.family.color)
+                        ShareBar(fraction: m.share, color: store.colorScale.color(for: m.shortName, family: m.family))
                         Text(Format.percent(m.share))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)

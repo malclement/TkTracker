@@ -98,16 +98,22 @@ enum ModelFamily: String, CaseIterable, Codable, Sendable {
 
     /// Short display name for a full model id, e.g. "claude-opus-4-8" -> "Opus 4.8".
     static func shortName(for model: String) -> String {
-        let m = model.lowercased()
         let family = ModelFamily(model: model)
         guard family != .other else { return model }
-        // Pull a version like "4-8" or "5" out of the id.
-        let parts = m.split(separator: "-")
-        var digits: [String] = []
-        for p in parts {
-            if p.allSatisfy(\.isNumber), p.count <= 2 { digits.append(String(p)) }
-        }
-        let version = digits.prefix(2).joined(separator: ".")
+        let version = versionDigits(model).prefix(2).joined(separator: ".")
         return version.isEmpty ? family.rawValue : "\(family.rawValue) \(version)"
+    }
+
+    /// Numeric generation for ordering within a family: "claude-opus-4-8" -> 4.8.
+    static func version(of model: String) -> Double {
+        Double(versionDigits(model).prefix(2).joined(separator: ".")) ?? 0
+    }
+
+    /// Version fragments like "4-8" or "5" from a model id (date suffixes excluded).
+    private static func versionDigits(_ model: String) -> [String] {
+        model.lowercased().split(separator: "-").compactMap { part -> String? in
+            guard part.count <= 2, part.allSatisfy(\.isNumber) else { return nil }
+            return String(part)
+        }
     }
 }

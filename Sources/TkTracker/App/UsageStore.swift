@@ -3,12 +3,13 @@ import Observation
 import ServiceManagement
 
 enum MenuBarDisplay: String, CaseIterable, Identifiable {
-    case cost, tokens, icon
+    case cost, tokens, block, icon
     var id: String { rawValue }
     var label: String {
         switch self {
         case .cost: return "Today's cost"
         case .tokens: return "Today's tokens"
+        case .block: return "Current 5h block"
         case .icon: return "Icon only"
         }
     }
@@ -19,6 +20,7 @@ final class UsageStore {
     static let shared = UsageStore()
 
     private(set) var stats: DashboardStats = .empty
+    private(set) var colorScale = ModelColorScale(palette: [])
     private(set) var isScanning = false
     private(set) var hasScanned = false
 
@@ -41,6 +43,17 @@ final class UsageStore {
             rebuild()
         }
     }
+
+    /// Daily spend threshold in USD; 0 disables.
+    var dailyBudget: Double {
+        didSet { UserDefaults.standard.set(dailyBudget, forKey: "dailyBudget") }
+    }
+
+    var isOverBudget: Bool { dailyBudget > 0 && stats.todayCost > dailyBudget }
+
+    // Dashboard navigation (project rows drill into the sessions table).
+    var dashboardSection: DashboardSection? = .overview
+    var sessionSearch = ""
 
     var launchAtLogin: Bool {
         didSet {
@@ -73,6 +86,7 @@ final class UsageStore {
         range = d.string(forKey: "range").flatMap(StatsRange.init(rawValue:)) ?? .today
         menuBarDisplay = d.string(forKey: "menuBarDisplay").flatMap(MenuBarDisplay.init(rawValue:)) ?? .cost
         includeHistory = d.object(forKey: "includeHistory") as? Bool ?? true
+        dailyBudget = d.double(forKey: "dailyBudget")
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -81,6 +95,12 @@ final class UsageStore {
         case .icon: return nil
         case .cost: return Format.moneyCompact(stats.todayCost)
         case .tokens: return Format.tokens(stats.todayTotals.total)
+        case .block:
+            guard let block = stats.block, block.isActive else {
+                return Format.moneyCompact(stats.todayCost)
+            }
+            let remaining = Format.durationCompact(block.end.timeIntervalSince(stats.generatedAt))
+            return "\(Format.moneyCompact(block.cost)) · \(remaining)"
         }
     }
 
@@ -178,5 +198,18 @@ final class UsageStore {
         var all = digests
         if includeHistory, let historyDigest { all.append(historyDigest) }
         stats = StatsBuilder.build(digests: all, range: range)
+        colorScale = ModelColorScale(palette: stats.modelPalette)
+        BudgetNotifier.notifyIfCrossed(todayCost: stats.todayCost, budget: dailyBudget)
+    }
+
+    func csvForCurrentRange() -> String {
+        var all = digests
+        if includeHistory, let historyDigest { all.append(historyDigest) }
+        return CSVExport.dailyByModel(digests: all, range: range)
+    }
+
+    func showSessions(filteredBy projectName: String) {
+        sessionSearch = projectName
+        dashboardSection = .sessions
     }
 }

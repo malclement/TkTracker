@@ -1,5 +1,17 @@
 import SwiftUI
+import AppKit
 import Charts
+import UniformTypeIdentifiers
+
+extension ChartUnit {
+    var calendarComponent: Calendar.Component {
+        switch self {
+        case .hour: return .hour
+        case .day: return .day
+        case .week: return .weekOfYear
+        }
+    }
+}
 
 enum DashboardSection: String, CaseIterable, Identifiable {
     case overview, projects, sessions, models
@@ -18,16 +30,16 @@ enum DashboardSection: String, CaseIterable, Identifiable {
 
 struct DashboardView: View {
     @Environment(UsageStore.self) private var store
-    @State private var section: DashboardSection? = .overview
 
     var body: some View {
+        @Bindable var store = store
         NavigationSplitView {
-            List(DashboardSection.allCases, selection: $section) { s in
+            List(DashboardSection.allCases, selection: $store.dashboardSection) { s in
                 Label(s.title, systemImage: s.icon).tag(s)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 185, max: 230)
         } detail: {
-            switch section ?? .overview {
+            switch store.dashboardSection ?? .overview {
             case .overview: OverviewView()
             case .projects: ProjectsView()
             case .sessions: SessionsView()
@@ -40,16 +52,29 @@ struct DashboardView: View {
     }
 }
 
-struct SectionHeader: View {
+struct SectionHeader<Trailing: View>: View {
     let title: String
+    @ViewBuilder let trailing: Trailing
+
+    init(title: String, @ViewBuilder trailing: () -> Trailing) {
+        self.title = title
+        self.trailing = trailing()
+    }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
                 .font(.title2.weight(.semibold))
             Spacer()
+            trailing
             RangePicker()
         }
+    }
+}
+
+extension SectionHeader where Trailing == EmptyView {
+    init(title: String) {
+        self.init(title: title) { EmptyView() }
     }
 }
 
@@ -86,13 +111,21 @@ struct OverviewView: View {
         let stats = store.stats
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(title: "Overview")
+                SectionHeader(title: "Overview") {
+                    Button {
+                        exportCSV()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Export current range as CSV (per day and model)")
+                }
 
                 HStack(alignment: .top, spacing: 12) {
                     StatTile(
                         label: "Spend",
                         value: Format.money(stats.cost),
-                        sub: stats.range == .today ? "since midnight" : stats.range.label.lowercased()
+                        sub: spendSub(stats)
                     )
                     StatTile(
                         label: "Tokens",
@@ -133,6 +166,22 @@ struct OverviewView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private func spendSub(_ stats: DashboardStats) -> String {
+        guard stats.range == .today else { return stats.range.label.lowercased() }
+        if let delta = stats.todayVsYesterday {
+            return "\(Format.signedPercent(delta)) vs yesterday by now"
+        }
+        return "since midnight"
+    }
+
+    private func exportCSV() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = "tktracker-\(store.stats.range.rawValue).csv"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? Data(store.csvForCurrentRange().utf8).write(to: url)
+    }
+
     private func coverageNote(_ stats: DashboardStats) -> String? {
         guard let since = stats.dataSince else { return nil }
         let f = DateFormatter()
@@ -150,7 +199,7 @@ struct OverviewView: View {
     // MARK: Spend chart
 
     private func spendChart(_ stats: DashboardStats) -> some View {
-        let families = presentFamilies(stats)
+        let names = presentModelNames(stats)
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(metric == .cost ? "Spend by model" : "Tokens by model")
@@ -167,15 +216,15 @@ struct OverviewView: View {
             Chart {
                 ForEach(stats.chart) { point in
                     BarMark(
-                        x: .value("Date", point.date, unit: stats.chartIsHourly ? .hour : .day),
+                        x: .value("Date", point.date, unit: stats.chartUnit.calendarComponent),
                         y: .value(metric.rawValue, metric == .cost ? point.cost : Double(point.tokens)),
                         width: .ratio(0.62)
                     )
-                    .foregroundStyle(by: .value("Model", point.family.rawValue))
+                    .foregroundStyle(by: .value("Model", point.modelName))
                     .cornerRadius(2.5)
                 }
                 if let selectedDate, let summary = selectionSummary(stats, at: selectedDate) {
-                    RuleMark(x: .value("Selected", summary.date, unit: stats.chartIsHourly ? .hour : .day))
+                    RuleMark(x: .value("Selected", summary.date, unit: stats.chartUnit.calendarComponent))
                         .foregroundStyle(.quaternary)
                         .zIndex(-1)
                         .annotation(
@@ -187,8 +236,11 @@ struct OverviewView: View {
                         }
                 }
             }
-            .chartForegroundStyleScale(domain: families.map(\.rawValue), range: families.map(\.color))
-            .chartLegend(families.count > 1 ? .visible : .hidden)
+            .chartForegroundStyleScale(
+                domain: names,
+                range: names.map { store.colorScale.color(for: $0) }
+            )
+            .chartLegend(names.count > 1 ? .visible : .hidden)
             .chartLegend(position: .top, alignment: .trailing, spacing: 6)
             .chartXSelection(value: $selectedDate)
             .chartYAxis {
@@ -206,7 +258,7 @@ struct OverviewView: View {
             .chartXAxis {
                 AxisMarks { _ in
                     AxisValueLabel(
-                        format: stats.chartIsHourly
+                        format: stats.chartUnit == .hour
                             ? .dateTime.hour()
                             : .dateTime.day().month(.abbreviated)
                     )
@@ -219,14 +271,14 @@ struct OverviewView: View {
         .card()
     }
 
-    private func presentFamilies(_ stats: DashboardStats) -> [ModelFamily] {
-        let present = Set(stats.chart.map(\.family))
-        return ModelFamily.displayOrder.filter(present.contains)
+    private func presentModelNames(_ stats: DashboardStats) -> [String] {
+        let present = Set(stats.chart.map(\.modelName))
+        return stats.modelPalette.map(\.name).filter(present.contains)
     }
 
     private struct SelectionSummary {
         let date: Date
-        let rows: [(family: ModelFamily, cost: Double, tokens: Int64)]
+        let rows: [(name: String, cost: Double, tokens: Int64)]
         var totalCost: Double { rows.reduce(0) { $0 + $1.cost } }
         var totalTokens: Int64 { rows.reduce(0) { $0 + $1.tokens } }
     }
@@ -236,26 +288,24 @@ struct OverviewView: View {
         guard let nearest = dates.min(by: {
             abs($0.timeIntervalSince(date)) < abs($1.timeIntervalSince(date))
         }) else { return nil }
-        let width: TimeInterval = stats.chartIsHourly ? 3600 : 86_400
+        let width = stats.chartUnit.seconds
         guard abs(nearest.timeIntervalSince(date)) <= width else { return nil }
-        let points = stats.chart.filter { $0.date == nearest }
-        let index = Dictionary(uniqueKeysWithValues: ModelFamily.displayOrder.enumerated().map { ($1, $0) })
-        let rows = points
-            .map { (family: $0.family, cost: $0.cost, tokens: $0.tokens) }
-            .sorted { (index[$0.family] ?? 9) < (index[$1.family] ?? 9) }
+        let index = Dictionary(uniqueKeysWithValues: stats.modelPalette.enumerated().map { ($1.name, $0) })
+        let rows = stats.chart
+            .filter { $0.date == nearest }
+            .map { (name: $0.modelName, cost: $0.cost, tokens: $0.tokens) }
+            .sorted { (index[$0.name] ?? 99) < (index[$1.name] ?? 99) }
         return SelectionSummary(date: nearest, rows: rows)
     }
 
     private func selectionCard(_ summary: SelectionSummary) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(summary.date, format: store.stats.chartIsHourly
-                ? .dateTime.hour().minute()
-                : .dateTime.weekday(.abbreviated).day().month(.abbreviated))
+            Text(selectionDateLabel(summary.date))
                 .font(.caption.weight(.semibold))
-            ForEach(summary.rows, id: \.family) { row in
+            ForEach(summary.rows, id: \.name) { row in
                 HStack(spacing: 5) {
-                    FamilySwatch(family: row.family)
-                    Text(row.family.rawValue)
+                    Swatch(color: store.colorScale.color(for: row.name))
+                    Text(row.name)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 12)
@@ -277,14 +327,25 @@ struct OverviewView: View {
         .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(.separator.opacity(0.6)))
     }
 
+    private func selectionDateLabel(_ date: Date) -> String {
+        switch store.stats.chartUnit {
+        case .hour:
+            return date.formatted(.dateTime.hour().minute())
+        case .day:
+            return date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+        case .week:
+            return "Week of " + date.formatted(.dateTime.day().month(.abbreviated))
+        }
+    }
+
     // MARK: Donut + side cards
 
     private func modelDonut(_ stats: DashboardStats) -> some View {
-        let byFamily = Dictionary(grouping: stats.models.filter { $0.cost > 0 }, by: \.family)
-            .map { (family: $0.key, cost: $0.value.reduce(0) { $0 + $1.cost }) }
-        let index = Dictionary(uniqueKeysWithValues: ModelFamily.displayOrder.enumerated().map { ($1, $0) })
-        let slices = byFamily.sorted { (index[$0.family] ?? 9) < (index[$1.family] ?? 9) }
-        let families = slices.map(\.family)
+        let byName = Dictionary(grouping: stats.models.filter { $0.cost > 0 }, by: \.shortName)
+            .map { (name: $0.key, cost: $0.value.reduce(0) { $0 + $1.cost }) }
+        let index = Dictionary(uniqueKeysWithValues: stats.modelPalette.enumerated().map { ($1.name, $0) })
+        let slices = byName.sorted { (index[$0.name] ?? 99) < (index[$1.name] ?? 99) }
+        let names = slices.map(\.name)
 
         return VStack(alignment: .leading, spacing: 10) {
             Text("Model share")
@@ -296,16 +357,19 @@ struct OverviewView: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 HStack(spacing: 18) {
-                    Chart(slices, id: \.family) { slice in
+                    Chart(slices, id: \.name) { slice in
                         SectorMark(
                             angle: .value("Cost", slice.cost),
                             innerRadius: .ratio(0.64),
                             angularInset: 1.4
                         )
                         .cornerRadius(2.5)
-                        .foregroundStyle(by: .value("Model", slice.family.rawValue))
+                        .foregroundStyle(by: .value("Model", slice.name))
                     }
-                    .chartForegroundStyleScale(domain: families.map(\.rawValue), range: families.map(\.color))
+                    .chartForegroundStyleScale(
+                        domain: names,
+                        range: names.map { store.colorScale.color(for: $0) }
+                    )
                     .chartLegend(.hidden)
                     .frame(width: 148, height: 148)
                     .overlay {
@@ -321,7 +385,7 @@ struct OverviewView: View {
                     VStack(alignment: .leading, spacing: 7) {
                         ForEach(stats.models.prefix(6)) { m in
                             HStack(spacing: 6) {
-                                FamilySwatch(family: m.family)
+                                Swatch(color: store.colorScale.color(for: m.shortName, family: m.family))
                                 Text(m.shortName)
                                     .font(.caption)
                                     .lineLimit(1)

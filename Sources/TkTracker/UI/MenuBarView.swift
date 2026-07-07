@@ -61,14 +61,27 @@ struct MenuBarView: View {
     }
 
     private func hero(_ stats: DashboardStats) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        var subtitle = "today · \(Format.tokens(stats.todayTotals.total)) tokens · \(stats.todayTotals.messages) msgs"
+        if stats.activeSessions > 0, stats.burnRatePerHour > 0.01 {
+            subtitle += " · ≈\(Format.money(stats.burnRatePerHour))/h"
+        }
+        return VStack(alignment: .leading, spacing: 2) {
             Text(Format.money(stats.todayCost))
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
                 .contentTransition(.numericText(value: stats.todayCost))
                 .animation(.snappy(duration: 0.4), value: stats.todayCost)
-            Text("today · \(Format.tokens(stats.todayTotals.total)) tokens · \(stats.todayTotals.messages) msgs")
+            Text(subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if store.isOverBudget {
+                Label(
+                    "Over daily budget — \(Format.money(stats.todayCost)) of \(Format.money(store.dailyBudget))",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(Theme.serious)
+                .padding(.top, 3)
+            }
         }
         .padding(.horizontal, 16)
     }

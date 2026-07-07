@@ -307,6 +307,118 @@ final class CoreTests {
         #expect(sameBlock.totals.messages == 2)
     }
 
+    // MARK: model palette
+
+    @Test func modelVersionParsing() {
+        #expect(ModelFamily.version(of: "claude-opus-4-8") == 4.8)
+        #expect(ModelFamily.version(of: "claude-fable-5") == 5.0)
+        #expect(ModelFamily.version(of: "claude-haiku-4-5-20251001") == 4.5)
+        #expect(ModelFamily.version(of: "claude-3-5-sonnet-20241022") == 3.5)
+        #expect(ModelFamily.version(of: "claude-opus-4-5-20251101") == 4.5)
+    }
+
+    @Test func modelPaletteIsAllTimeAndOrdered() throws {
+        var t = TokenTotals()
+        t.output = 10
+        t.messages = 1
+        var digest = FileDigest(path: "/a.jsonl", sessionId: "s", projectDir: "p")
+        let oldHour: Int64 = 1_700_000_000 / 3600 * 3600
+        let now = Date(timeIntervalSince1970: Double(oldHour) + 40 * 86_400)
+        let recentHour = Int64(now.timeIntervalSince1970 / 3600) * 3600
+        digest.buckets = [
+            HourBucket(hour: oldHour, model: "claude-opus-4-6", totals: t),
+            HourBucket(hour: oldHour, model: "claude-sonnet-4-5-20250929", totals: t),
+            HourBucket(hour: recentHour, model: "claude-opus-4-8", totals: t),
+            HourBucket(hour: recentHour, model: "claude-fable-5", totals: t),
+        ].sorted { $0.hour < $1.hour }
+
+        // Palette order: family (fable, sonnet, opus, haiku), then version ascending.
+        let all = StatsBuilder.build(digests: [digest], range: .all, now: now)
+        #expect(all.modelPalette.map(\.name) == ["Fable 5", "Sonnet 4.5", "Opus 4.6", "Opus 4.8"])
+
+        // Range filter must not change the palette (colors never repaint on filter).
+        let today = StatsBuilder.build(digests: [digest], range: .today, now: now)
+        #expect(today.modelPalette == all.modelPalette)
+    }
+
+    // MARK: chart unit, burn rate, deltas, CSV
+
+    @Test func chartUnitSelection() throws {
+        var digest = FileDigest(path: "/a.jsonl", sessionId: "s", projectDir: "p")
+        var t = TokenTotals()
+        t.output = 10
+        t.messages = 1
+        let base = try #require(JSONLParser.epoch(fromISO8601: "2026-01-05T12:00:00.000Z"))
+        let hour0 = Int64(base / 3600) * 3600
+        digest.buckets = [
+            HourBucket(hour: hour0, model: "claude-opus-4-8", totals: t),
+            HourBucket(hour: hour0 + 86_400, model: "claude-opus-4-8", totals: t), // next day, same week
+        ]
+
+        let now = Date(timeIntervalSince1970: base + 180 * 86_400)
+        let all = StatsBuilder.build(digests: [digest], range: .all, now: now)
+        #expect(all.chartUnit == .week)
+        #expect(all.chart.count == 1) // Mon+Tue merge into one weekly bar
+        #expect(all.chart.first?.tokens == 20)
+
+        #expect(StatsBuilder.build(digests: [digest], range: .month, now: now).chartUnit == .day)
+        #expect(StatsBuilder.build(digests: [digest], range: .today, now: now).chartUnit == .hour)
+    }
+
+    @Test func burnRateAndYesterdayDelta() throws {
+        // now is 10:30Z; opus-4-8 output-only buckets so cost is output * $25/MTok.
+        let nowEpoch = try #require(JSONLParser.epoch(fromISO8601: "2026-07-07T10:30:00.000Z"))
+        let nowHour = Int64(nowEpoch / 3600) * 3600
+        func bucket(_ hour: Int64, _ outputMTok: Int64) -> HourBucket {
+            var t = TokenTotals()
+            t.output = outputMTok * 1_000_000
+            t.messages = 1
+            return HourBucket(hour: hour, model: "claude-opus-4-8", totals: t)
+        }
+        var digest = FileDigest(path: "/a.jsonl", sessionId: "s", projectDir: "p")
+        digest.buckets = [
+            bucket(nowHour - 86_400 - 3600, 1), // yesterday 09:00 — full weight ($25)
+            bucket(nowHour - 86_400, 1),        // yesterday 10:00 — half elapsed ($12.50)
+            bucket(nowHour - 3600, 2),          // 09:00 ($50)
+            bucket(nowHour, 1),                 // 10:00 so far ($25)
+        ].sorted { $0.hour < $1.hour }
+
+        let stats = StatsBuilder.build(digests: [digest], range: .today, now: Date(timeIntervalSince1970: nowEpoch))
+        // Trailing hour: $25 (current) + $50 * 30/60 (previous) = $50/h.
+        #expect(abs(stats.burnRatePerHour - 50) < 1e-9)
+        // Today $75 vs $37.50 yesterday-by-now: +100%.
+        let delta = try #require(stats.todayVsYesterday)
+        #expect(abs(delta - 1.0) < 1e-9)
+    }
+
+    @Test func csvExport() throws {
+        var digest = FileDigest(path: "/a.jsonl", sessionId: "s", projectDir: "p")
+        var t = TokenTotals()
+        t.input = 100
+        t.output = 50
+        t.messages = 1
+        let epoch = try #require(JSONLParser.epoch(fromISO8601: "2026-07-07T12:00:00.000Z"))
+        let hour = Int64(epoch / 3600) * 3600
+        digest.buckets = [HourBucket(hour: hour, model: "claude-opus-4-8", totals: t)]
+
+        let csv = CSVExport.dailyByModel(
+            digests: [digest],
+            range: .all,
+            now: Date(timeIntervalSince1970: epoch + 3600)
+        )
+        let lines = csv.split(separator: "\n")
+        #expect(lines.count == 2)
+        #expect(lines[0] == Substring(CSVExport.header))
+
+        let df = DateFormatter()
+        df.calendar = .current
+        df.timeZone = Calendar.current.timeZone
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.dateFormat = "yyyy-MM-dd"
+        let day = df.string(from: Date(timeIntervalSince1970: Double(hour)))
+        #expect(lines[1].hasPrefix("\(day),claude-opus-4-8,100,50,0,0,0,0,1,"))
+    }
+
     // MARK: stats
 
     @Test func statsBuilderAggregates() throws {

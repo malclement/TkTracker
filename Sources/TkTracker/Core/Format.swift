@@ -66,6 +66,19 @@ enum Format {
         return "\(m)m"
     }
 
+    /// Menu-bar-width variant: "2h05", "31m".
+    static func durationCompact(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        let h = s / 3600, m = (s % 3600) / 60
+        if h > 0 { return "\(h)h\(String(format: "%02d", m))" }
+        return "\(m)m"
+    }
+
+    /// "+38%" / "-12%".
+    static func signedPercent(_ fraction: Double) -> String {
+        String(format: "%+.0f%%", fraction * 100)
+    }
+
     private static func trim(_ v: Double, _ digits: Int) -> String {
         var s = String(format: "%.\(digits)f", v)
         while s.contains("."), s.hasSuffix("0") { s.removeLast() }
