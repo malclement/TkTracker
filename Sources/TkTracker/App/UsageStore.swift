@@ -44,12 +44,67 @@ final class UsageStore {
         }
     }
 
+    /// Which sources TkTracker scans and shows. Off = not scanned, not shown
+    /// (already-cached history stays on disk and returns when re-enabled).
+    var trackClaude: Bool {
+        didSet {
+            UserDefaults.standard.set(trackClaude, forKey: "trackClaude")
+            sourcesChanged()
+        }
+    }
+
+    var trackCodex: Bool {
+        didSet {
+            UserDefaults.standard.set(trackCodex, forKey: "trackCodex")
+            sourcesChanged()
+        }
+    }
+
+    /// View filter over the tracked sources — one lens for the menu bar figure,
+    /// popover, dashboard, CSV export and budget alike.
+    var sourceScope: SourceScope {
+        didSet {
+            UserDefaults.standard.set(sourceScope.rawValue, forKey: "sourceScope")
+            rebuild()
+        }
+    }
+
+    var trackedSources: Set<UsageSource> {
+        var set = Set<UsageSource>()
+        if trackClaude { set.insert(.claude) }
+        if trackCodex { set.insert(.codex) }
+        return set
+    }
+
+    /// Sources the UI is currently showing: the scope, clipped to what's
+    /// tracked. A scope pointing at an untracked source falls back to all.
+    var visibleSources: Set<UsageSource> {
+        let visible = sourceScope.sources.intersection(trackedSources)
+        return visible.isEmpty ? trackedSources : visible
+    }
+
+    /// The scope switcher only earns its place when there is a choice to make:
+    /// both sources tracked, and both actually present on this machine (a data
+    /// directory or cached history).
+    var showsSourceScope: Bool {
+        trackClaude && trackCodex && claudePresent && codexPresent
+    }
+
+    private var claudePresent = false
+    private var codexPresent = false
+
     /// Daily spend threshold in USD; 0 disables.
     var dailyBudget: Double {
         didSet { UserDefaults.standard.set(dailyBudget, forKey: "dailyBudget") }
     }
 
-    var isOverBudget: Bool { dailyBudget > 0 && stats.todayCost > dailyBudget }
+    /// Today's spend across ALL tracked sources — the budget is a standing
+    /// commitment about total spend, so a transient view filter must never
+    /// disarm it (the visible `stats.todayCost` follows the filter; this
+    /// doesn't).
+    private(set) var trackedTodayCost: Double = 0
+
+    var isOverBudget: Bool { dailyBudget > 0 && trackedTodayCost > dailyBudget }
 
     // Dashboard navigation (project rows drill into the sessions table).
     var dashboardSection: DashboardSection? = .overview
@@ -69,11 +124,12 @@ final class UsageStore {
     }
 
     let dataRoot = ScanCore.defaultRoot()
+    let codexDataRoot = ScanCore.defaultRoot(for: .codex)
 
     private var digests: [FileDigest] = []
     private var historyDigest: FileDigest?
     private let engine = UsageEngine()
-    private var watcher: ProjectsWatcher?
+    private var watchers: [ProjectsWatcher] = []
     private var started = false
     private var refreshing = false
     private var refreshQueued = false
@@ -86,6 +142,9 @@ final class UsageStore {
         range = d.string(forKey: "range").flatMap(StatsRange.init(rawValue:)) ?? .today
         menuBarDisplay = d.string(forKey: "menuBarDisplay").flatMap(MenuBarDisplay.init(rawValue:)) ?? .cost
         includeHistory = d.object(forKey: "includeHistory") as? Bool ?? true
+        trackClaude = d.object(forKey: "trackClaude") as? Bool ?? true
+        trackCodex = d.object(forKey: "trackCodex") as? Bool ?? true
+        sourceScope = d.string(forKey: "sourceScope").flatMap(SourceScope.init(rawValue:)) ?? .all
         dailyBudget = d.double(forKey: "dailyBudget")
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -105,22 +164,36 @@ final class UsageStore {
     }
 
     var dataDirExists: Bool { FileManager.default.fileExists(atPath: dataRoot.path) }
+    var codexDataDirExists: Bool { FileManager.default.fileExists(atPath: codexDataRoot.path) }
+
+    /// True when at least one source the user is viewing has a data directory.
+    var visibleDataDirExists: Bool {
+        visibleSources.contains { source in
+            switch source {
+            case .claude: return dataDirExists
+            case .codex: return codexDataDirExists
+            }
+        }
+    }
+
+    /// (name, path) rows for the empty state — the tracked roots being watched.
+    var trackedRoots: [(name: String, path: String)] {
+        var out: [(String, String)] = []
+        if trackClaude { out.append((UsageSource.claude.displayName, dataRoot.path)) }
+        if trackCodex { out.append((UsageSource.codex.displayName, codexDataRoot.path)) }
+        return out
+    }
 
     func startIfNeeded() async {
         guard !started else { return }
         started = true
 
         digests = await engine.bootstrap()
-        historyDigest = StatsCacheImport.historyDigest(transcriptDigests: digests)
+        rebuildHistoryDigest()
         if !digests.isEmpty { rebuild() }
 
         await refreshNow()
-
-        let watcher = ProjectsWatcher(path: dataRoot.path) { [weak self] in
-            Task { @MainActor in self?.scheduleRefresh() }
-        }
-        watcher.start()
-        self.watcher = watcher
+        startWatchers()
 
         minuteLoop = Task { [weak self] in
             while !Task.isCancelled {
@@ -128,6 +201,25 @@ final class UsageStore {
                 await self?.minuteTick()
             }
         }
+    }
+
+    private func startWatchers() {
+        for watcher in watchers { watcher.stop() }
+        watchers = trackedSources.sorted { $0.rawValue < $1.rawValue }.map { source in
+            let root = source == .claude ? dataRoot : codexDataRoot
+            let watcher = ProjectsWatcher(path: root.path) { [weak self] in
+                Task { @MainActor in self?.scheduleRefresh() }
+            }
+            watcher.start()
+            return watcher
+        }
+    }
+
+    private func sourcesChanged() {
+        guard started else { return }
+        startWatchers()
+        rebuild()
+        scheduleRefresh()
     }
 
     func scheduleRefresh() {
@@ -146,8 +238,8 @@ final class UsageStore {
         }
         refreshing = true
         if !hasScanned { isScanning = true }
-        digests = await engine.refresh()
-        historyDigest = StatsCacheImport.historyDigest(transcriptDigests: digests)
+        digests = await engine.refresh(sources: trackedSources)
+        rebuildHistoryDigest()
         rebuild()
         hasScanned = true
         isScanning = false
@@ -160,10 +252,18 @@ final class UsageStore {
 
     func resetCacheAndRescan() async {
         isScanning = true
-        digests = await engine.reset()
-        historyDigest = StatsCacheImport.historyDigest(transcriptDigests: digests)
+        digests = await engine.reset(rescanning: trackedSources)
+        rebuildHistoryDigest()
         rebuild()
         isScanning = false
+    }
+
+    /// The imported pre-cleanup estimate is Claude-only; its cutoff must come
+    /// from Claude transcripts alone or older Codex data would clip it.
+    private func rebuildHistoryDigest() {
+        historyDigest = StatsCacheImport.historyDigest(
+            transcriptDigests: digests.filter { $0.source == .claude }
+        )
     }
 
     func flush() async {
@@ -195,17 +295,39 @@ final class UsageStore {
     }
 
     private func rebuild() {
-        var all = digests
-        if includeHistory, let historyDigest { all.append(historyDigest) }
-        stats = StatsBuilder.build(digests: all, range: range)
+        claudePresent = dataDirExists || digests.contains { $0.source == .claude }
+        codexPresent = codexDataDirExists || digests.contains { $0.source == .codex }
+        stats = StatsBuilder.build(digests: visibleDigests(), range: range)
         colorScale = ModelColorScale(palette: stats.modelPalette)
-        BudgetNotifier.notifyIfCrossed(todayCost: stats.todayCost, budget: dailyBudget)
+        trackedTodayCost = trackedTodayCostNow()
+        BudgetNotifier.notifyIfCrossed(todayCost: trackedTodayCost, budget: dailyBudget)
+    }
+
+    /// Today's cost over all tracked sources, ignoring the view filter (the
+    /// imported pre-cleanup estimate never covers today, so transcripts and
+    /// archived digests are the whole picture).
+    private func trackedTodayCostNow() -> Double {
+        let todayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        var cost = 0.0
+        for digest in digests where trackedSources.contains(digest.source) {
+            // Buckets are sorted by hour; today's sit at the tail.
+            for bucket in digest.buckets.reversed() {
+                if Double(bucket.hour) < todayStart { break }
+                cost += Pricing.cost(model: bucket.model, totals: bucket.totals)
+            }
+        }
+        return cost
+    }
+
+    private func visibleDigests() -> [FileDigest] {
+        let visible = visibleSources
+        var all = digests.filter { visible.contains($0.source) }
+        if includeHistory, visible.contains(.claude), let historyDigest { all.append(historyDigest) }
+        return all
     }
 
     func csvForCurrentRange() -> String {
-        var all = digests
-        if includeHistory, let historyDigest { all.append(historyDigest) }
-        return CSVExport.dailyByModel(digests: all, range: range)
+        CSVExport.dailyByModel(digests: visibleDigests(), range: range)
     }
 
     func showSessions(filteredBy projectName: String) {

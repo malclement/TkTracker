@@ -84,6 +84,39 @@ struct RangePicker: View {
     }
 }
 
+/// One lens over the data sources — everything on screen follows it.
+struct SourceScopePicker: View {
+    @Environment(UsageStore.self) private var store
+
+    var body: some View {
+        @Bindable var store = store
+        Picker("Sources", selection: $store.sourceScope) {
+            ForEach(SourceScope.allCases) { scope in
+                Text(scope.label).tag(scope)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 190)
+        .help("Show usage from Claude Code, Codex, or both")
+    }
+}
+
+/// Shared toolbar content: the time range plus, when more than one source is
+/// tracked, the source lens.
+struct FilterBar: View {
+    @Environment(UsageStore.self) private var store
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RangePicker()
+            if store.showsSourceScope {
+                SourceScopePicker()
+            }
+        }
+    }
+}
+
 // MARK: - Overview
 
 private enum ChartMetric: String, CaseIterable, Identifiable {
@@ -157,7 +190,7 @@ struct OverviewView: View {
         .navigationTitle("Overview")
         .toolbar {
             ToolbarItem(placement: .principal) {
-                RangePicker()
+                FilterBar()
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -165,7 +198,7 @@ struct OverviewView: View {
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
-                .help("Export current range as CSV (per day and model)")
+                .help("Export current range as CSV (per day, source and model)")
             }
         }
     }

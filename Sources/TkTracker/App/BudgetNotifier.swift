@@ -23,7 +23,7 @@ enum BudgetNotifier {
             guard granted else { return }
             let content = UNMutableNotificationContent()
             content.title = "Daily budget exceeded"
-            content.body = "Claude Code usage is at \(Format.money(todayCost)) today"
+            content.body = "Today's usage is at \(Format.money(todayCost))"
                 + " (budget \(Format.money(budget)))."
             content.sound = .default
             center.add(UNNotificationRequest(

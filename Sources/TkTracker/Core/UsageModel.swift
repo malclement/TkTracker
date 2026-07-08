@@ -25,6 +25,18 @@ struct TokenTotals: Codable, Sendable, Equatable {
         messages = messages.saturatingAdding(other.messages)
         webSearches = webSearches.saturatingAdding(other.webSearches)
     }
+
+    /// Exact inverse of `add` for amounts previously added (used to reverse a
+    /// provisional attribution); clamps like everything else on this type.
+    mutating func subtract(_ other: TokenTotals) {
+        input = input.saturatingAdding(-other.input)
+        output = output.saturatingAdding(-other.output)
+        cacheRead = cacheRead.saturatingAdding(-other.cacheRead)
+        cacheWrite5m = cacheWrite5m.saturatingAdding(-other.cacheWrite5m)
+        cacheWrite1h = cacheWrite1h.saturatingAdding(-other.cacheWrite1h)
+        messages = messages.saturatingAdding(-other.messages)
+        webSearches = webSearches.saturatingAdding(-other.webSearches)
+    }
 }
 
 /// Token counts come from untrusted files (transcripts, Claude Code's stats
@@ -69,8 +81,13 @@ struct FileDigest: Codable, Sendable, Identifiable, Equatable {
     /// Byte offset of the first unparsed line; appended lines are parsed incrementally.
     var offset: Int64 = 0
 
+    /// Not persisted: each source keeps its own cache/archive files, and the
+    /// pipeline that loads or parses a digest stamps it. Keeping it out of the
+    /// encoding leaves the pre-source Claude cache format untouched.
+    var source: UsageSource = .claude
+
     var sessionId: String
-    var projectDir: String // encoded folder name under ~/.claude/projects
+    var projectDir: String // Claude Code's encoded-cwd folder name; Codex digests encode cwd the same way so shared projects merge
     var cwd: String?
     var gitBranch: String?
     var aiTitle: String?
@@ -80,6 +97,14 @@ struct FileDigest: Codable, Sendable, Identifiable, Equatable {
     var lastModel: String?
     /// Prompt-side tokens of the most recent request — approximates live context size.
     var lastContextTokens: Int64 = 0
+    /// Context window observed in the session's own usage events (Codex reports
+    /// one per call); nil falls back to the per-model table.
+    var contextWindow: Int64?
+    /// Codex usage seen before the file has named a model, shown provisionally
+    /// under the fallback model but kept re-attributable: the next scan reverses
+    /// the provisional buckets and re-attributes once a turn_context arrives, so
+    /// incremental scans always converge to what a full rescan would produce.
+    var pendingBuckets: [HourBucket]?
     /// File no longer on disk; totals are retained as history.
     var missing: Bool = false
 
@@ -87,6 +112,13 @@ struct FileDigest: Codable, Sendable, Identifiable, Equatable {
     /// Tail of recently seen (messageId:requestId) keys so incremental parses
     /// keep deduping streamed duplicates across the resume boundary.
     var recentKeys: [String] = []
+
+    enum CodingKeys: String, CodingKey {
+        // `source` deliberately absent — see its comment.
+        case path, size, mtime, offset, sessionId, projectDir, cwd, gitBranch
+        case aiTitle, fallbackTitle, firstTs, lastTs, lastModel, lastContextTokens
+        case contextWindow, pendingBuckets, missing, buckets, recentKeys
+    }
 
     var id: String { path }
     var title: String? { aiTitle ?? fallbackTitle }

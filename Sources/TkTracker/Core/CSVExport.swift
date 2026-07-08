@@ -1,9 +1,9 @@
 import Foundation
 
-/// Per-day, per-model usage rows for spreadsheets — shared by the CLI (`report --csv`)
-/// and the dashboard's export button.
+/// Per-day, per-source, per-model usage rows for spreadsheets — shared by the
+/// CLI (`report --csv`) and the dashboard's export button.
 enum CSVExport {
-    static let header = "date,model,input_tokens,output_tokens,cache_read_tokens,"
+    static let header = "date,source,model,input_tokens,output_tokens,cache_read_tokens,"
         + "cache_write_5m_tokens,cache_write_1h_tokens,web_searches,messages,cost_usd"
 
     static func dailyByModel(
@@ -24,11 +24,12 @@ enum CSVExport {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
 
-        struct Key: Hashable { let day: String; let model: String }
+        struct Key: Hashable { let day: String; let source: String; let model: String }
         var rows: [Key: TokenTotals] = [:]
         var dayCache: [Int64: String] = [:]
 
         for digest in digests {
+            let source = digest.source.rawValue
             for bucket in digest.buckets {
                 if let start, Double(bucket.hour) < start { continue }
                 let day: String
@@ -38,14 +39,14 @@ enum CSVExport {
                     day = formatter.string(from: Date(timeIntervalSince1970: Double(bucket.hour)))
                     dayCache[bucket.hour] = day
                 }
-                rows[Key(day: day, model: bucket.model), default: TokenTotals()].add(bucket.totals)
+                rows[Key(day: day, source: source, model: bucket.model), default: TokenTotals()].add(bucket.totals)
             }
         }
 
         var out = header + "\n"
-        for (key, t) in rows.sorted(by: { ($0.key.day, $0.key.model) < ($1.key.day, $1.key.model) }) {
+        for (key, t) in rows.sorted(by: { ($0.key.day, $0.key.source, $0.key.model) < ($1.key.day, $1.key.source, $1.key.model) }) {
             let cost = Pricing.cost(model: key.model, totals: t)
-            out += "\(key.day),\(key.model),\(t.input),\(t.output),\(t.cacheRead),"
+            out += "\(key.day),\(key.source),\(key.model),\(t.input),\(t.output),\(t.cacheRead),"
                 + "\(t.cacheWrite5m),\(t.cacheWrite1h),\(t.webSearches),\(t.messages),"
                 + String(format: "%.4f", cost) + "\n"
         }

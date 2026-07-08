@@ -98,7 +98,7 @@ struct ProjectsView: View {
         .navigationTitle("Projects")
         .toolbar {
             ToolbarItem(placement: .principal) {
-                RangePicker()
+                FilterBar()
             }
         }
     }
@@ -119,9 +119,16 @@ struct SessionsView: View {
                 $0.title.lowercased().contains(q)
                     || $0.projectName.lowercased().contains(q)
                     || $0.model.lowercased().contains(q)
+                    || $0.source.displayName.lowercased().contains(q)
             }
         }
         return r.sorted(using: sortOrder)
+    }
+
+    /// Sessions from both tools are interleaved when the lens shows all —
+    /// name the tool in the caption so rows stay tellable-apart.
+    private var showsSourceInCaption: Bool {
+        store.showsSourceScope && store.sourceScope == .all
     }
 
     var body: some View {
@@ -132,7 +139,9 @@ struct SessionsView: View {
                     if s.isLive { LiveDot() }
                     VStack(alignment: .leading, spacing: 1) {
                         Text(s.title).lineLimit(1)
-                        Text(s.projectName + (s.missing ? " · history" : ""))
+                        Text(s.projectName
+                             + (showsSourceInCaption ? " · \(s.source.displayName)" : "")
+                             + (s.missing ? " · history" : ""))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -176,7 +185,7 @@ struct SessionsView: View {
                     }
                 }
                 Button("Copy Resume Command") {
-                    copyToPasteboard("claude --resume \(row.sessionId)")
+                    copyToPasteboard(row.source.resumeCommand(sessionId: row.sessionId))
                 }
                 Button("Copy Session ID") {
                     copyToPasteboard(row.sessionId)
@@ -205,7 +214,7 @@ struct SessionsView: View {
         )
         .toolbar {
             ToolbarItem(placement: .principal) {
-                RangePicker()
+                FilterBar()
             }
         }
     }
@@ -295,13 +304,13 @@ struct ModelsView: View {
         .navigationTitle("Models")
         .toolbar {
             ToolbarItem(placement: .principal) {
-                RangePicker()
+                FilterBar()
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
-                Text("Costs are estimated from Anthropic list prices per model (cache reads 0.1×, 5m writes 1.25×, 1h writes 2× input; web search $10 per 1K requests). Subscription plans bill differently — treat these as API-equivalent value.")
+                Text("Costs are estimated from Anthropic and OpenAI list prices per model (Claude: cache reads 0.1×, 5m writes 1.25×, 1h writes 2× input, web search $10 per 1K requests; OpenAI: cached input 0.1×, no cache-write charge). Subscription plans bill differently — treat these as API-equivalent value.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -11,22 +11,27 @@ enum Main {
             print("TkTracker \(AppVersion.current)")
         case "--help", "-h", "help":
             print("""
-            TkTracker — Claude Code token & cost tracker for macOS
+            TkTracker — Claude Code & Codex token & cost tracker for macOS
 
             Run with no arguments to start the menu bar app.
 
             Commands:
-              report [--json|--csv] [--range today|week|month|quarter|all] [--transcripts-only]
+              report [--json|--csv] [--range today|week|month|quarter|all]
+                     [--source claude|codex|all] [--transcripts-only]
                   Print a usage report. --json emits the full dashboard stats;
-                  --csv emits per-day, per-model rows. By default the report blends
-                  in estimated pre-cleanup history from Claude Code's stats cache;
-                  --transcripts-only restricts it to exact transcript data.
+                  --csv emits per-day, per-source, per-model rows. --source
+                  restricts it to one tool (default: all). By default the report
+                  blends in estimated pre-cleanup history from Claude Code's
+                  stats cache; --transcripts-only restricts it to exact
+                  transcript data.
               --version
                   Print the version and exit.
 
             Environment:
               CLAUDE_CONFIG_DIR   Override the Claude data directory
                                   (default ~/.claude; sessions read from <dir>/projects).
+              CODEX_HOME          Override the Codex data directory
+                                  (default ~/.codex; sessions read from <dir>/sessions).
             """)
         default:
             TkTrackerApp.main()

@@ -29,9 +29,12 @@ final class ClaimTable: @unchecked Sendable {
 
 /// Synchronous scanning primitives shared by the app engine and the CLI:
 /// file discovery, change detection, parallel incremental parsing, cache IO.
+/// One instance per usage source — same machinery, different root, parser and
+/// cache file.
 struct ScanCore: Sendable {
     static let cacheVersion = 2
 
+    var source: UsageSource = .claude
     let root: URL
     let cacheURL: URL
 
@@ -46,8 +49,30 @@ struct ScanCore: Sendable {
             .appendingPathComponent(".claude", isDirectory: true)
     }
 
+    /// Codex CLI's data directory: `CODEX_HOME` if set, else `~/.codex`.
+    static func codexConfigRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let custom = environment["CODEX_HOME"], !custom.isEmpty {
+            return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+    }
+
     static func defaultRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         configRoot(environment: environment).appendingPathComponent("projects", isDirectory: true)
+    }
+
+    static func defaultRoot(
+        for source: UsageSource,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        switch source {
+        case .claude:
+            return defaultRoot(environment: environment)
+        case .codex:
+            return codexConfigRoot(environment: environment)
+                .appendingPathComponent("sessions", isDirectory: true)
+        }
     }
 
     /// The scan cache is namespaced per data root: the default root keeps the
@@ -61,6 +86,27 @@ struct ScanCore: Sendable {
             return base.appendingPathComponent("TkTracker/scan-cache-\(suffix).json")
         }
         return base.appendingPathComponent("TkTracker/scan-cache.json")
+    }
+
+    /// Codex digests live in their own cache file (`CODEX_HOME` overrides are
+    /// namespaced like Claude profiles); the Claude cache keeps its pre-source
+    /// name and format, so up/downgrading the app never mixes the two.
+    static func defaultCacheURL(
+        for source: UsageSource,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        switch source {
+        case .claude:
+            return defaultCacheURL(environment: environment)
+        case .codex:
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            if environment["CODEX_HOME"]?.isEmpty == false {
+                let suffix = stableHash(defaultRoot(for: .codex, environment: environment).path)
+                return base.appendingPathComponent("TkTracker/scan-cache-codex-\(suffix).json")
+            }
+            return base.appendingPathComponent("TkTracker/scan-cache-codex.json")
+        }
     }
 
     /// FNV-1a — deterministic across launches, unlike `Hasher`.
@@ -92,9 +138,14 @@ struct ScanCore: Sendable {
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
             guard let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]),
                   rv.isRegularFile == true else { continue }
-            var rel = url.path
-            if rel.hasPrefix(rootPath) { rel = String(rel.dropFirst(rootPath.count)) }
-            let projectDir = rel.split(separator: "/").first.map(String.init) ?? ""
+            // Claude nests sessions under an encoded-project folder; Codex nests
+            // by date (YYYY/MM/DD), so its project comes from the file's cwd.
+            var projectDir = ""
+            if source == .claude {
+                var rel = url.path
+                if rel.hasPrefix(rootPath) { rel = String(rel.dropFirst(rootPath.count)) }
+                projectDir = rel.split(separator: "/").first.map(String.init) ?? ""
+            }
             out.append(FileMeta(
                 url: url,
                 projectDir: projectDir,
@@ -139,20 +190,31 @@ struct ScanCore: Sendable {
             return RefreshResult(digests: result, claims: claims, changed: changed)
         }
 
+        let source = self.source
         let claimTable = ClaimTable(claims: claims)
         var scanned = [FileDigest?](repeating: nil, count: work.count)
         scanned.withUnsafeMutableBufferPointer { buffer in
             let base = buffer.baseAddress!
             DispatchQueue.concurrentPerform(iterations: work.count) { i in
                 let meta = work[i]
-                base[i] = JSONLParser.scan(
-                    url: meta.url,
-                    previous: digests[meta.url.path],
-                    projectDir: meta.projectDir,
-                    size: meta.size,
-                    mtime: meta.mtime,
-                    claims: claimTable
-                )
+                switch source {
+                case .claude:
+                    base[i] = JSONLParser.scan(
+                        url: meta.url,
+                        previous: digests[meta.url.path],
+                        projectDir: meta.projectDir,
+                        size: meta.size,
+                        mtime: meta.mtime,
+                        claims: claimTable
+                    )
+                case .codex:
+                    base[i] = CodexParser.scan(
+                        url: meta.url,
+                        previous: digests[meta.url.path],
+                        size: meta.size,
+                        mtime: meta.mtime
+                    )
+                }
             }
         }
         for digest in scanned {
@@ -167,9 +229,16 @@ struct ScanCore: Sendable {
 
     func loadCache() -> DigestCache {
         guard let data = try? Data(contentsOf: cacheURL),
-              let cache = try? JSONDecoder().decode(DigestCache.self, from: data),
+              var cache = try? JSONDecoder().decode(DigestCache.self, from: data),
               cache.version == Self.cacheVersion
         else { return DigestCache(version: Self.cacheVersion, digests: [:], claims: [:]) }
+        // `source` isn't persisted — the per-source cache file implies it.
+        if source != .claude {
+            for (path, var digest) in cache.digests {
+                digest.source = source
+                cache.digests[path] = digest
+            }
+        }
         return cache
     }
 

@@ -11,10 +11,14 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 0) {
             header(stats)
 
-            if !store.dataDirExists || (stats.allTimeCost == 0 && stats.totals.messages == 0 && !store.hasScanned) {
-                EmptyDataView(scanning: store.isScanning,
-                              root: (store.dataRoot.path as NSString).abbreviatingWithTildeInPath)
-                    .frame(height: 140)
+            if !store.visibleDataDirExists || (stats.allTimeCost == 0 && stats.totals.messages == 0 && !store.hasScanned) {
+                EmptyDataView(
+                    scanning: store.isScanning,
+                    roots: store.trackedRoots.map {
+                        ($0.name, ($0.path as NSString).abbreviatingWithTildeInPath)
+                    }
+                )
+                .frame(height: 140)
             } else {
                 hero(stats)
                 HourSparkline(points: stats.hourly24, currentHour: currentHour)
@@ -62,6 +66,9 @@ struct MenuBarView: View {
         HStack(spacing: 8) {
             Eyebrow(text: Date.now.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
             Spacer()
+            if store.showsSourceScope {
+                sourceScopeMenu
+            }
             if stats.activeSessions > 0 {
                 HStack(spacing: 4.5) {
                     LiveDot()
@@ -81,6 +88,32 @@ struct MenuBarView: View {
         .padding(.bottom, 10)
     }
 
+    /// Compact lens switcher: every figure in the popover (and the menu bar)
+    /// follows it, so what you see always agrees about what it covers.
+    private var sourceScopeMenu: some View {
+        @Bindable var store = store
+        return Menu {
+            Picker("Sources", selection: $store.sourceScope) {
+                ForEach(SourceScope.allCases) { scope in
+                    Text(scope == .all ? "All sources" : scope.label).tag(scope)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 8.5, weight: .bold))
+                Text(store.sourceScope == .all ? "All sources" : store.sourceScope.label)
+                    .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(store.sourceScope == .all ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.accent))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Show usage from Claude Code, Codex, or both")
+    }
+
     private func hero(_ stats: DashboardStats) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(Format.money(stats.todayCost))
@@ -90,6 +123,15 @@ struct MenuBarView: View {
             Text("\(Format.tokens(stats.todayTotals.total)) tokens · \(stats.todayTotals.messages) messages today")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            // Both tools burning today: show how the figure splits.
+            let claudeToday = stats.todayCost(for: .claude)
+            let codexToday = stats.todayCost(for: .codex)
+            if store.sourceScope == .all, claudeToday > 0.0005, codexToday > 0.0005 {
+                Text("Claude Code \(Format.money(claudeToday)) · Codex \(Format.money(codexToday))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
 
             let showBurn = stats.activeSessions > 0 && stats.burnRatePerHour > 0.01
             if showBurn || store.isOverBudget {
@@ -122,7 +164,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 10) {
             Eyebrow(text: "Live sessions")
             if stats.liveSessions.isEmpty {
-                Text("No active sessions — costs update live while Claude Code runs.")
+                Text("No active sessions — costs update live while \(liveToolNames) runs.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
@@ -151,6 +193,13 @@ struct MenuBarView: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+
+    private var liveToolNames: String {
+        let visible = store.visibleSources
+        if visible == [.claude] { return "Claude Code" }
+        if visible == [.codex] { return "Codex" }
+        return "Claude Code or Codex"
     }
 
     private func footer(_ stats: DashboardStats) -> some View {

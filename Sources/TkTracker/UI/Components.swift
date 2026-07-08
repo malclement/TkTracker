@@ -249,7 +249,8 @@ struct BlockGauge: View {
 
 struct EmptyDataView: View {
     let scanning: Bool
-    let root: String
+    /// Tracked source roots, e.g. ("Claude Code", "~/.claude/projects").
+    let roots: [(name: String, path: String)]
 
     var body: some View {
         VStack(spacing: 9) {
@@ -264,12 +265,18 @@ struct EmptyDataView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 44, height: 44)
                     .background(Circle().fill(Theme.track))
-                Text("No Claude Code sessions found")
+                Text(roots.count == 1
+                     ? "No \(roots[0].name) sessions found"
+                     : "No sessions found")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Text(root)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(roots, id: \.path) { root in
+                        Text(roots.count == 1 ? root.path : "\(root.name)  \(root.path)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.tertiary)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -26,9 +26,12 @@ extension Color {
     }
 }
 
-/// Chart palette. Slot order Fable → Sonnet → Opus → Haiku is load-bearing:
-/// it was chosen so adjacent stacked segments stay CVD-distinguishable in both
-/// modes (validated: light worst adjacent ΔE 16.6, dark 15.7).
+/// Chart palette. Slot order Fable → Sonnet → Opus → Haiku → GPT is
+/// load-bearing: it was chosen so adjacent stacked segments stay
+/// CVD-distinguishable in both modes (validated: light worst adjacent ΔE 16.6,
+/// dark 15.7; the GPT magenta ramp keeps CVD ΔE ≥ 12.3 against every step of
+/// every other family in both modes — worst pairs 13.7 light / 12.3 dark — and
+/// ≥ 54 at its Haiku stack boundary).
 extension ModelFamily {
     // Stored once: dynamic NSColors compare by instance, and per-render allocation
     // would break both Color equality and the chart's foreground scale.
@@ -37,6 +40,7 @@ extension ModelFamily {
         .sonnet: .adaptive(light: 0x1BAF7A, dark: 0x199E70),
         .opus: .adaptive(light: 0x2A78D6, dark: 0x3987E5),
         .haiku: .adaptive(light: 0xEDA100, dark: 0xC98500),
+        .gpt: .adaptive(light: 0xAB247E, dark: 0xD966AC),
         .other: .adaptive(light: 0x898781, dark: 0x898781),
     ]
 
@@ -75,6 +79,16 @@ struct ModelColorScale {
             .adaptive(light: 0xBE7E00, dark: 0xA76E00),
             .adaptive(light: 0x8F5D00, dark: 0x865800),
         ],
+        // GPT (Codex) — magenta at OKLCH hue 345°, picked by maximizing the
+        // worst CVD pair against the Anthropic families (rose at 0–10° collapses
+        // into Sonnet green under deuteranopia; magenta keeps ΔE ≥ 12.3 vs
+        // every family step in both modes and passes the ordinal ramp checks).
+        .gpt: [
+            .adaptive(light: 0xAB247E, dark: 0xD966AC),
+            .adaptive(light: 0xC34A96, dark: 0xB95391),
+            .adaptive(light: 0xD96DAE, dark: 0x9A4478),
+            .adaptive(light: 0xED90C6, dark: 0x803764),
+        ],
         .other: [
             .adaptive(light: 0x898781, dark: 0x898781),
             .adaptive(light: 0xA5A39C, dark: 0x6E6C66),
@@ -94,8 +108,12 @@ struct ModelColorScale {
         for (_, entries) in Dictionary(grouping: palette, by: \.family) {
             guard let family = entries.first?.family else { continue }
             let ramp = Self.ramp(for: family)
-            // Newest version claims the strongest step; overflow shares the last one.
-            for (index, entry) in entries.sorted(by: { $0.version > $1.version }).enumerated() {
+            // Newest version claims the strongest step; overflow shares the last
+            // one. Name breaks version ties so assignment is deterministic.
+            let ordered = entries.sorted {
+                $0.version != $1.version ? $0.version > $1.version : $0.name < $1.name
+            }
+            for (index, entry) in ordered.enumerated() {
                 assigned[entry.name] = ramp[min(index, ramp.count - 1)]
             }
         }
