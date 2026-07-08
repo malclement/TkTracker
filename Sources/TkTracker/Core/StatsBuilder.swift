@@ -90,6 +90,7 @@ struct ProjectRow: Identifiable, Codable, Sendable {
 struct SessionRow: Identifiable, Codable, Sendable {
     let path: String
     let sessionId: String
+    let source: UsageSource
     let title: String
     let projectName: String
     let cwd: String?
@@ -143,6 +144,15 @@ struct DashboardStats: Codable, Sendable {
     var burnRatePerHour: Double
     /// Today's cost vs yesterday at the same time of day, as a signed fraction.
     var todayVsYesterday: Double?
+    /// Range cost/tokens split by usage source (raw values), for the source breakdown.
+    var costBySource: [String: Double]
+    var totalsBySource: [String: TokenTotals]
+    /// Today's cost split by usage source.
+    var todayCostBySource: [String: Double]
+
+    func cost(for source: UsageSource) -> Double { costBySource[source.rawValue] ?? 0 }
+    func totals(for source: UsageSource) -> TokenTotals { totalsBySource[source.rawValue] ?? TokenTotals() }
+    func todayCost(for source: UsageSource) -> Double { todayCostBySource[source.rawValue] ?? 0 }
 
     static let empty = DashboardStats(
         range: .today, generatedAt: .distantPast, totals: TokenTotals(), cost: 0,
@@ -150,7 +160,8 @@ struct DashboardStats: Codable, Sendable {
         modelPalette: [], hourly24: [], models: [], projects: [], sessions: [], liveSessions: [],
         block: nil, todayCost: 0, todayTotals: TokenTotals(), allTimeCost: 0,
         dataSince: nil, hasEstimatedHistory: false,
-        burnRatePerHour: 0, todayVsYesterday: nil
+        burnRatePerHour: 0, todayVsYesterday: nil,
+        costBySource: [:], totalsBySource: [:], todayCostBySource: [:]
     )
 }
 
@@ -198,6 +209,9 @@ enum StatsBuilder {
         var hourAll: [Int64: HourAgg] = [:]
         var todayTotals = TokenTotals()
         var todayCost = 0.0
+        var costBySource: [String: Double] = [:]
+        var totalsBySource: [String: TokenTotals] = [:]
+        var todayCostBySource: [String: Double] = [:]
         var allTimeCost = 0.0
         var projectAgg: [String: ProjectAgg] = [:]
         var sessionRows: [SessionRow] = []
@@ -275,6 +289,10 @@ enum StatsBuilder {
                 agg.tokens = agg.tokens.saturatingAdding(bucket.totals.total)
                 chartAgg[key] = agg
             }
+
+            if inRangeCost > 0 { costBySource[digest.source.rawValue, default: 0] += inRangeCost }
+            if !inRange.isEmpty { totalsBySource[digest.source.rawValue, default: TokenTotals()].add(inRange) }
+            if todayDigestCost > 0 { todayCostBySource[digest.source.rawValue, default: 0] += todayDigestCost }
 
             let isLive = !digest.missing && digest.lastTs.map { nowEpoch - $0 < liveWindow } ?? false
             if isLive { activeSessions += 1 }
@@ -427,7 +445,10 @@ enum StatsBuilder {
             dataSince: minHour.map { Date(timeIntervalSince1970: Double($0)) },
             hasEstimatedHistory: hasEstimatedHistory,
             burnRatePerHour: burnRatePerHour,
-            todayVsYesterday: todayVsYesterday
+            todayVsYesterday: todayVsYesterday,
+            costBySource: costBySource,
+            totalsBySource: totalsBySource,
+            todayCostBySource: todayCostBySource
         )
     }
 
@@ -437,6 +458,7 @@ enum StatsBuilder {
         return SessionRow(
             path: digest.path,
             sessionId: digest.sessionId,
+            source: digest.source,
             title: digest.title ?? "Untitled session",
             projectName: projectName,
             cwd: digest.cwd,
@@ -447,7 +469,9 @@ enum StatsBuilder {
             totals: totals,
             cost: cost,
             contextTokens: digest.lastContextTokens,
-            contextLimit: Pricing.contextWindow(for: model),
+            // The session's own observed window (Codex reports one per call)
+            // beats the per-model table.
+            contextLimit: digest.contextWindow ?? Pricing.contextWindow(for: model),
             isLive: isLive,
             missing: digest.missing
         )

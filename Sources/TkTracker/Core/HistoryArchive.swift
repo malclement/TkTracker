@@ -14,6 +14,7 @@ import Foundation
 /// precise values outlive the transcript, the scan cache, and any reset; the
 /// estimated "Earlier history" stays clipped to days before first app use.
 struct HistoryArchive: Sendable {
+    var source: UsageSource = .claude
     let url: URL
 
     /// Lives next to the scan cache and is namespaced per data root the same
@@ -28,11 +29,39 @@ struct HistoryArchive: Sendable {
         return base.appendingPathComponent("TkTracker/history-archive.json")
     }
 
+    /// Per-source archives mirror the per-source scan caches: the Claude file
+    /// keeps its historical name; Codex gets its own (namespaced per
+    /// `CODEX_HOME` root the same way).
+    static func defaultURL(
+        for source: UsageSource,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        switch source {
+        case .claude:
+            return defaultURL(environment: environment)
+        case .codex:
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            if environment["CODEX_HOME"]?.isEmpty == false {
+                let suffix = ScanCore.stableHash(ScanCore.defaultRoot(for: .codex, environment: environment).path)
+                return base.appendingPathComponent("TkTracker/history-archive-codex-\(suffix).json")
+            }
+            return base.appendingPathComponent("TkTracker/history-archive-codex.json")
+        }
+    }
+
     func load() -> DigestCache {
         guard let data = try? Data(contentsOf: url),
-              let cache = try? JSONDecoder().decode(DigestCache.self, from: data),
+              var cache = try? JSONDecoder().decode(DigestCache.self, from: data),
               cache.version == ScanCore.cacheVersion
         else { return DigestCache(version: ScanCore.cacheVersion, digests: [:], claims: [:]) }
+        // `source` isn't persisted — the per-source archive file implies it.
+        if source != .claude {
+            for (path, var digest) in cache.digests {
+                digest.source = source
+                cache.digests[path] = digest
+            }
+        }
         return cache
     }
 

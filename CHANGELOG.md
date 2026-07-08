@@ -5,6 +5,51 @@ All notable changes to TkTracker are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-08
+
+### Added
+
+- **OpenAI Codex support**: TkTracker now tracks Codex CLI sessions
+  (`~/.codex/sessions` rollout files) alongside Claude Code, through the same
+  pipeline — live menu bar / popover updates, charts, 5h blocks, project /
+  session / model tables, history archive, CSV and CLI.
+  - Accounting sums each rollout's per-call `last_token_usage` deltas (immune
+    to the cumulative counter's rebase on context compaction), splits cached
+    input out at OpenAI's 0.1× rate, attributes usage to the model active in
+    the most recent `turn_context`, and counts subagent thread files.
+    Verified against an independent reference implementation over real data
+    (335 files, 455MB: exact match on tokens, calls and cost).
+  - OpenAI pricing: GPT-5.5 $5/$30, GPT-5.4 $2.50/$15 (+mini/nano),
+    GPT-5.3-Codex $1.75/$14, GPT-5.2 $0.875/$7, GPT-5/5.1 $1.25/$10,
+    Codex Mini $0.25/$2; unknown generations are flagged "no pricing", never
+    guessed. Context gauges use the window each session actually reports.
+  - **Source filter**: when both tools are tracked, an All / Claude / Codex
+    lens in the popover header and dashboard toolbar drives every figure on
+    screen — menu bar, budget, charts, tables, CSV export. Sessions of both
+    tools working in the same directory merge into one project row; the
+    popover splits today's figure per tool when both are burning.
+  - **Settings → Sources**: toggle each source independently (at least one
+    stays on); turning one off hides it and stops scanning, and its history
+    returns when re-enabled.
+  - CLI: `--source claude|codex|all`, a "By source" block in the report,
+    `CODEX_HOME` honored; CSV gains a `source` column.
+  - Charts: a new GPT (magenta) family ramp — chosen by maximizing the worst
+    CVD-simulated pair against the existing families (ΔE ≥ 12.3 vs every step
+    of every family, ≥ 54 at the stack boundary; ordinal ramp checks pass in
+    both modes). Existing family colors are untouched.
+  - Codex data lives in its own scan cache and history archive
+    (`scan-cache-codex.json`, `history-archive-codex.json`), so the existing
+    Claude cache format is unchanged in both directions.
+
+### Changed
+
+- **CSV format**: exports gain a `source` column in position 2
+  (`date,source,model,…`); consumers that indexed columns positionally need a
+  one-column shift. The `--json` report adds `costBySource`, `totalsBySource`
+  and `todayCostBySource`.
+- The daily budget explicitly watches all tracked sources, regardless of the
+  view filter (the filter drives what's displayed, never what alerts).
+
 ## [1.3.0] - 2026-07-07
 
 ### Added

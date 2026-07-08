@@ -1,5 +1,60 @@
 import Foundation
 
+/// Shared chunked JSONL reader for the incremental parsers: streams complete
+/// lines from a byte offset and commits the consumed offset once per chunk, so
+/// a read error mid-file never leaves parsed data ahead of the offset (which
+/// would double count on retry). A trailing partial line (no newline yet) is a
+/// write in progress — the committed offset never advances past the last
+/// complete line.
+enum JSONLChunker {
+    static func forEachLine(
+        handle: FileHandle,
+        from offset: Int64,
+        onLine: (Data) -> Void,
+        commit: (Int64) -> Void
+    ) {
+        do {
+            try handle.seek(toOffset: UInt64(offset))
+            var remainder = Data()
+            var consumed = offset
+            while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
+                var work: Data
+                if remainder.isEmpty {
+                    work = chunk
+                } else {
+                    work = remainder
+                    work.append(chunk)
+                    remainder = Data()
+                }
+                // Newlines via memchr — Data.firstIndex walks the bytes through
+                // Collection machinery and dominated cold scans of large files.
+                var lineRanges: [Range<Int>] = []
+                work.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress else { return }
+                    var lineStart = 0
+                    while lineStart < raw.count,
+                          let hit = memchr(base + lineStart, 0x0A, raw.count - lineStart) {
+                        let nl = UnsafeRawPointer(hit) - base
+                        lineRanges.append(lineStart..<nl)
+                        lineStart = nl + 1
+                    }
+                }
+                let start = work.startIndex
+                var cursor = 0
+                for range in lineRanges {
+                    consumed += Int64(range.count + 1)
+                    onLine(work[(start + range.lowerBound)..<(start + range.upperBound)])
+                    cursor = range.upperBound + 1
+                }
+                if cursor < work.count { remainder = Data(work[(start + cursor)...]) }
+                commit(consumed)
+            }
+        } catch {
+            // Keep whatever was parsed; offset only advanced past complete lines.
+        }
+    }
+}
+
 /// Incremental parser for Claude Code session JSONL files.
 ///
 /// Only lines that can carry usage or titles are JSON-decoded (cheap byte-needle
@@ -41,35 +96,12 @@ enum JSONLParser {
         defer { try? handle.close() }
 
         var state = ScanState(digest: digest, claims: claims)
-        do {
-            try handle.seek(toOffset: UInt64(digest.offset))
-            var remainder = Data()
-            var consumed = digest.offset
-            while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
-                var work: Data
-                if remainder.isEmpty {
-                    work = chunk
-                } else {
-                    work = remainder
-                    work.append(chunk)
-                    remainder = Data()
-                }
-                var cursor = work.startIndex
-                while let nl = work[cursor...].firstIndex(of: 0x0A) {
-                    consumed += Int64(nl - cursor + 1)
-                    processLine(work[cursor..<nl], state: &state)
-                    cursor = work.index(after: nl)
-                }
-                if cursor < work.endIndex { remainder = Data(work[cursor...]) }
-                // Commit per chunk so a read error mid-file never leaves parsed
-                // buckets ahead of the offset (which would double count on retry).
-                // A trailing partial line (no newline yet) is a write in progress —
-                // `consumed` never advances past the last complete line.
-                state.digest.offset = consumed
-            }
-        } catch {
-            // Keep whatever was parsed; offset only advanced past complete lines.
-        }
+        JSONLChunker.forEachLine(
+            handle: handle,
+            from: digest.offset,
+            onLine: { processLine($0, state: &state) },
+            commit: { state.digest.offset = $0 }
+        )
 
         digest = state.finalized()
         digest.size = size

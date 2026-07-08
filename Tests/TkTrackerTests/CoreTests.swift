@@ -521,7 +521,7 @@ final class CoreTests {
         df.locale = Locale(identifier: "en_US_POSIX")
         df.dateFormat = "yyyy-MM-dd"
         let day = df.string(from: Date(timeIntervalSince1970: Double(hour)))
-        #expect(lines[1].hasPrefix("\(day),claude-opus-4-8,100,50,0,0,0,0,1,"))
+        #expect(lines[1].hasPrefix("\(day),claude,claude-opus-4-8,100,50,0,0,0,0,1,"))
     }
 
     // MARK: stats

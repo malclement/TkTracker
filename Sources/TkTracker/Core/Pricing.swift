@@ -16,6 +16,20 @@ struct ModelPricing: Sendable, Equatable {
         self.cacheWrite5m = input * 1.25
         self.cacheWrite1h = input * 2.0
     }
+
+    /// OpenAI billing: cached input at 10% of input, no cache-write charge
+    /// (Codex usage never reports cache-write tokens).
+    static func openAI(input: Double, output: Double) -> ModelPricing {
+        ModelPricing(input: input, output: output, cacheRead: input * 0.1, cacheWrite5m: 0, cacheWrite1h: 0)
+    }
+
+    init(input: Double, output: Double, cacheRead: Double, cacheWrite5m: Double, cacheWrite1h: Double) {
+        self.input = input
+        self.output = output
+        self.cacheRead = cacheRead
+        self.cacheWrite5m = cacheWrite5m
+        self.cacheWrite1h = cacheWrite1h
+    }
 }
 
 enum Pricing {
@@ -27,6 +41,23 @@ enum Pricing {
     static func pricing(for model: String) -> ModelPricing? {
         let m = model.lowercased()
         if m.isEmpty || m.contains("synthetic") { return nil }
+        // OpenAI (Codex sessions) — list prices per MTok, standard tier.
+        // gpt-5.4/5.5 long-context premiums are not modeled (like [1m] Sonnet,
+        // sessions run the standard window unless the prompt exceeds it).
+        if m.contains("gpt") || m.contains("codex") {
+            if m.contains("codex-mini-latest") { return .openAI(input: 1.5, output: 6) } // pre-GPT-5 codex
+            if m.contains("codex-mini") { return .openAI(input: 0.25, output: 2) } // gpt-5.1-codex-mini
+            if m.contains("gpt-5.5") { return .openAI(input: 5, output: 30) }
+            if m.contains("gpt-5.4-mini") { return .openAI(input: 0.75, output: 4.5) }
+            if m.contains("gpt-5.4-nano") { return .openAI(input: 0.20, output: 1.25) }
+            if m.contains("gpt-5.4") { return .openAI(input: 2.5, output: 15) }
+            if m.contains("gpt-5.3") { return .openAI(input: 1.75, output: 14) } // gpt-5.3-codex
+            if m.contains("gpt-5.2") { return .openAI(input: 0.875, output: 7) }
+            if m.contains("gpt-5"), m.contains("mini") { return .openAI(input: 0.25, output: 2) } // gpt-5-mini / 5.1-mini
+            if m.contains("gpt-5"), m.contains("nano") { return .openAI(input: 0.05, output: 0.40) }
+            if m.contains("gpt-5") { return .openAI(input: 1.25, output: 10) } // gpt-5 / 5.1 (+codex, max)
+            return nil // unknown generations surface as "no pricing", never a guess
+        }
         if m.contains("fable") || m.contains("mythos") { return ModelPricing(input: 10, output: 50) }
         if m.contains("opus-4-5") || m.contains("opus-4-6") || m.contains("opus-4-7") || m.contains("opus-4-8") {
             return ModelPricing(input: 5, output: 25)
@@ -68,11 +99,16 @@ enum Pricing {
         return uncached - actual
     }
 
-    /// Context window used for the session context gauge. Claude Code appends
-    /// "[1m]" to the model id when the 1M-token window is active; everything
-    /// else runs the standard 200K window.
+    /// Context window used for the session context gauge when the session's own
+    /// usage events don't report one (Codex does; that value wins). Claude Code
+    /// appends "[1m]" to the model id when the 1M-token window is active;
+    /// GPT-5-family models run a ~272K input window; everything else the
+    /// standard 200K.
     static func contextWindow(for model: String) -> Int64 {
-        model.lowercased().contains("[1m]") ? 1_000_000 : 200_000
+        let m = model.lowercased()
+        if m.contains("[1m]") { return 1_000_000 }
+        if m.contains("gpt") || m.contains("codex") { return 272_000 }
+        return 200_000
     }
 }
 
@@ -82,11 +118,13 @@ enum ModelFamily: String, CaseIterable, Codable, Sendable {
     case sonnet = "Sonnet"
     case opus = "Opus"
     case haiku = "Haiku"
+    case gpt = "GPT"
     case other = "Other"
 
     init(model: String) {
         let m = model.lowercased()
-        if m.contains("fable") || m.contains("mythos") { self = .fable }
+        if m.contains("gpt") || m.contains("codex") { self = .gpt }
+        else if m.contains("fable") || m.contains("mythos") { self = .fable }
         else if m.contains("opus") { self = .opus }
         else if m.contains("sonnet") { self = .sonnet }
         else if m.contains("haiku") { self = .haiku }
@@ -94,19 +132,37 @@ enum ModelFamily: String, CaseIterable, Codable, Sendable {
     }
 
     /// Fixed stacking/legend order — validated for CVD-safe adjacency in both color modes.
-    static let displayOrder: [ModelFamily] = [.fable, .sonnet, .opus, .haiku, .other]
+    static let displayOrder: [ModelFamily] = [.fable, .sonnet, .opus, .haiku, .gpt, .other]
 
-    /// Short display name for a full model id, e.g. "claude-opus-4-8" -> "Opus 4.8".
+    /// Short display name for a full model id, e.g. "claude-opus-4-8" -> "Opus 4.8",
+    /// "gpt-5.3-codex" -> "Codex 5.3".
     static func shortName(for model: String) -> String {
         let family = ModelFamily(model: model)
-        guard family != .other else { return model }
-        let version = versionDigits(model).prefix(2).joined(separator: ".")
-        return version.isEmpty ? family.rawValue : "\(family.rawValue) \(version)"
+        switch family {
+        case .other:
+            return model
+        case .gpt:
+            let m = model.lowercased()
+            let version = dottedVersion(m).map { trimmedVersion($0) }
+            let base: String
+            if m.contains("codex"), m.contains("mini") { base = "Codex Mini" }
+            else if m.contains("codex") { base = "Codex" }
+            else { base = version == nil ? "GPT" : "GPT-" }
+            guard let version else { return base }
+            return base.hasSuffix("-") ? base + version : "\(base) \(version)"
+        default:
+            let version = versionDigits(model).prefix(2).joined(separator: ".")
+            return version.isEmpty ? family.rawValue : "\(family.rawValue) \(version)"
+        }
     }
 
-    /// Numeric generation for ordering within a family: "claude-opus-4-8" -> 4.8.
+    /// Numeric generation for ordering within a family: "claude-opus-4-8" -> 4.8,
+    /// "gpt-5.5" -> 5.5.
     static func version(of model: String) -> Double {
-        Double(versionDigits(model).prefix(2).joined(separator: ".")) ?? 0
+        if ModelFamily(model: model) == .gpt {
+            return dottedVersion(model.lowercased()) ?? 0
+        }
+        return Double(versionDigits(model).prefix(2).joined(separator: ".")) ?? 0
     }
 
     /// Version fragments like "4-8" or "5" from a model id (date suffixes excluded).
@@ -115,5 +171,25 @@ enum ModelFamily: String, CaseIterable, Codable, Sendable {
             guard part.count <= 2, part.allSatisfy(\.isNumber) else { return nil }
             return String(part)
         }
+    }
+
+    /// OpenAI ids version with dots inside one segment ("gpt-5.5", "gpt-5.3-codex").
+    private static func dottedVersion(_ model: String) -> Double? {
+        for part in model.split(whereSeparator: { $0 == "-" || $0 == "_" }) {
+            guard part.count <= 4, part.contains(where: \.isNumber),
+                  part.allSatisfy({ $0.isNumber || $0 == "." }),
+                  let value = Double(part)
+            else { continue }
+            return value
+        }
+        return nil
+    }
+
+    /// "5.0" -> "5", "5.50" -> "5.5" for display.
+    private static func trimmedVersion(_ value: Double) -> String {
+        var s = String(format: "%.2f", value)
+        while s.contains("."), s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+        return s
     }
 }

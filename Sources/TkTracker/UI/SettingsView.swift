@@ -6,6 +6,26 @@ struct SettingsView: View {
     var body: some View {
         @Bindable var store = store
         Form {
+            Section("Sources") {
+                sourceToggle(
+                    "Claude Code",
+                    isOn: $store.trackClaude,
+                    lastEnabled: store.trackClaude && !store.trackCodex,
+                    path: store.dataRoot.path,
+                    exists: store.dataDirExists
+                )
+                sourceToggle(
+                    "Codex (OpenAI)",
+                    isOn: $store.trackCodex,
+                    lastEnabled: store.trackCodex && !store.trackClaude,
+                    path: store.codexDataRoot.path,
+                    exists: store.codexDataDirExists
+                )
+                Text("When both are on, the popover and dashboard get a filter to view either source or both together. Turning a source off hides it and stops scanning; its history returns when re-enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Menu bar") {
                 Picker("Show", selection: $store.menuBarDisplay) {
                     ForEach(MenuBarDisplay.allCases) { d in
@@ -21,7 +41,7 @@ struct SettingsView: View {
                     value: $store.dailyBudget,
                     format: .number.precision(.fractionLength(0...2))
                 )
-                Text("0 disables. When today's cost crosses the budget, the menu bar icon switches to a warning and you get one notification per day (permission is requested the first time).")
+                Text("0 disables. When today's cost crosses the budget, the menu bar icon switches to a warning and you get one notification per day (permission is requested the first time). The budget watches all tracked sources, regardless of the view filter.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -33,12 +53,6 @@ struct SettingsView: View {
                     Text("Claude Code deletes transcripts after ~30 days. Its aggregate stats survive; TkTracker uses them to reconstruct earlier usage per day and model, expanded by each model's lifetime cache mix. Only days from before you started using TkTracker are ever estimated — exact usage seen since then is archived locally and kept for good.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                LabeledContent("Data") {
-                    Text(store.dataRoot.path)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
                 }
                 LabeledContent("Cache") {
                     VStack(alignment: .trailing, spacing: 3) {
@@ -63,7 +77,7 @@ struct SettingsView: View {
                     Link("github.com/malclement/TkTracker",
                          destination: URL(string: "https://github.com/malclement/TkTracker")!)
                 }
-                Text("All data stays on this Mac. Costs are estimated from Anthropic list prices; deleted session files keep their exact history from a local archive that survives rescans.")
+                Text("All data stays on this Mac. Costs are estimated from Anthropic and OpenAI list prices; deleted session files keep their exact history from a local archive that survives rescans.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -72,6 +86,25 @@ struct SettingsView: View {
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { NSApp.activate() }
+    }
+
+    @ViewBuilder
+    private func sourceToggle(
+        _ title: String,
+        isOn: Binding<Bool>,
+        lastEnabled: Bool,
+        path: String,
+        exists: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle(title, isOn: isOn)
+                .disabled(lastEnabled) // at least one source stays on
+            Text((path as NSString).abbreviatingWithTildeInPath
+                 + (exists ? "" : " — not found"))
+                .font(.caption.monospaced())
+                .foregroundStyle(exists ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.warning))
+                .textSelection(.enabled)
+        }
     }
 
     private var appVersion: String {

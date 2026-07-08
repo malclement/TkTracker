@@ -42,10 +42,11 @@ and `UI/` are the SwiftUI menu bar app; `CLI/` is the terminal report.
 
 ## Updating model pricing
 
-The most common contribution: when Anthropic ships or reprices a model, edit
-the table in `Sources/TkTracker/Core/Pricing.swift`, add a test case in
-`Tests/TkTrackerTests/CoreTests.swift`, and link the public pricing page in
-your PR description.
+The most common contribution: when Anthropic or OpenAI ships or reprices a
+model, edit the table in `Sources/TkTracker/Core/Pricing.swift`, add a test
+case in `Tests/TkTrackerTests` (`CoreTests.swift` for Claude models,
+`CodexTests.swift` for OpenAI ones), and link the public pricing page in your
+PR description.
 
 ## Commit and PR conventions
 

@@ -1,38 +1,100 @@
 import Foundation
 
-/// `tktracker report [--json] [--range today|week|month|quarter|all]`
-/// Terminal companion to the menu bar app; shares the same scan cache.
+/// `tktracker report [--json] [--range today|week|month|quarter|all] [--source claude|codex|all]`
+/// Terminal companion to the menu bar app; shares the same scan caches.
 enum CLIReport {
     static func run(arguments: [String]) -> Int32 {
         let json = arguments.contains("--json")
+
+        /// A flag present without a value is an error the caller must surface
+        /// (silently ignoring it would print a report the user explicitly
+        /// tried to restrict).
+        enum FlagValue { case absent, missingValue, value(String) }
+        func value(of flag: String) -> FlagValue {
+            guard let idx = arguments.firstIndex(of: flag) else { return .absent }
+            guard idx + 1 < arguments.count else { return .missingValue }
+            return .value(arguments[idx + 1])
+        }
+
         var range: StatsRange? = nil
-        if let idx = arguments.firstIndex(of: "--range"), idx + 1 < arguments.count {
-            range = StatsRange(rawValue: arguments[idx + 1])
-            if range == nil {
-                FileHandle.standardError.write(Data("unknown range '\(arguments[idx + 1])' — use today|week|month|quarter|all\n".utf8))
+        switch value(of: "--range") {
+        case .absent:
+            break
+        case .missingValue:
+            FileHandle.standardError.write(Data("missing value for --range — use today|week|month|quarter|all\n".utf8))
+            return 2
+        case .value(let raw):
+            guard let parsed = StatsRange(rawValue: raw) else {
+                FileHandle.standardError.write(Data("unknown range '\(raw)' — use today|week|month|quarter|all\n".utf8))
                 return 2
+            }
+            range = parsed
+        }
+
+        var wanted = Set(UsageSource.allCases)
+        var explicitSource: UsageSource? = nil
+        switch value(of: "--source") {
+        case .absent:
+            break
+        case .missingValue:
+            FileHandle.standardError.write(Data("missing value for --source — use claude|codex|all\n".utf8))
+            return 2
+        case .value(let raw):
+            if raw != "all" {
+                guard let source = UsageSource(rawValue: raw) else {
+                    FileHandle.standardError.write(Data("unknown source '\(raw)' — use claude|codex|all\n".utf8))
+                    return 2
+                }
+                wanted = [source]
+                explicitSource = source
             }
         }
 
-        let core = ScanCore(root: ScanCore.defaultRoot(), cacheURL: ScanCore.defaultCacheURL())
-        guard FileManager.default.fileExists(atPath: core.root.path) else {
-            FileHandle.standardError.write(Data("no Claude Code data at \(core.root.path)\n".utf8))
+        var all: [FileDigest] = []
+        var scannedRoots: [String] = []
+        var missingRoots: [String] = []
+        for source in UsageSource.allCases where wanted.contains(source) {
+            let core = ScanCore(
+                source: source,
+                root: ScanCore.defaultRoot(for: source),
+                cacheURL: ScanCore.defaultCacheURL(for: source)
+            )
+            guard FileManager.default.fileExists(atPath: core.root.path) else {
+                // A source the user explicitly asked for must not be skipped quietly.
+                if explicitSource == source {
+                    FileHandle.standardError.write(Data("no \(source.displayName) data at \(core.root.path)\n".utf8))
+                    return 1
+                }
+                missingRoots.append("no \(source.displayName) data at \(core.root.path)")
+                continue
+            }
+            scannedRoots.append(core.root.path)
+            let cache = core.loadCache()
+            let archive = HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
+            let archiveCache = archive.load()
+            var seededDigests = cache.digests
+            var seededClaims = cache.claims
+            HistoryArchive.seed(archive: archiveCache, intoDigests: &seededDigests, claims: &seededClaims)
+            let result = core.refreshed(digests: seededDigests, claims: seededClaims)
+            if result.changed { core.saveCache(digests: result.digests, claims: result.claims) }
+            if let updated = HistoryArchive.updated(archiveCache, digests: result.digests, claims: result.claims) {
+                archive.save(updated)
+            }
+            all += result.digests.values
+        }
+        guard !scannedRoots.isEmpty else {
+            FileHandle.standardError.write(Data("no session data found:\n  \(missingRoots.joined(separator: "\n  "))\n".utf8))
             return 1
         }
-        let cache = core.loadCache()
-        let archive = HistoryArchive(url: HistoryArchive.defaultURL())
-        let archiveCache = archive.load()
-        var seededDigests = cache.digests
-        var seededClaims = cache.claims
-        HistoryArchive.seed(archive: archiveCache, intoDigests: &seededDigests, claims: &seededClaims)
-        let result = core.refreshed(digests: seededDigests, claims: seededClaims)
-        if result.changed { core.saveCache(digests: result.digests, claims: result.claims) }
-        if let updated = HistoryArchive.updated(archiveCache, digests: result.digests, claims: result.claims) {
-            archive.save(updated)
+        // One root present, the other absent: report what's being skipped
+        // (stderr, so --json/--csv stdout stays clean).
+        for note in missingRoots {
+            FileHandle.standardError.write(Data("note: \(note)\n".utf8))
         }
-        var all = Array(result.digests.values)
-        if !arguments.contains("--transcripts-only"),
-           let history = StatsCacheImport.historyDigest(transcriptDigests: all) {
+        if wanted.contains(.claude), !arguments.contains("--transcripts-only"),
+           let history = StatsCacheImport.historyDigest(
+               transcriptDigests: all.filter { $0.source == .claude }
+           ) {
             all.append(history)
         }
 
@@ -62,9 +124,14 @@ enum CLIReport {
         let ranges: [StatsRange] = focus.map { [$0] } ?? [.today, .week, .month, .all]
         let stats = ranges.map { StatsBuilder.build(digests: digests, range: $0, now: now) }
 
+        let present = Set(digests.map(\.source))
+        let subject = present == [.claude] ? "Claude Code usage"
+            : present == [.codex] ? "Codex usage"
+            : "Claude Code + Codex usage"
+
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd HH:mm"
-        print("TkTracker — Claude Code usage".padded(52) + df.string(from: now))
+        print("TkTracker — \(subject)".padded(52) + df.string(from: now))
         print("")
 
         print("  " + "Range".padded(10) + "Cost".padded(11) + "Tokens".padded(10)
@@ -89,6 +156,21 @@ enum CLIReport {
             hf.dateFormat = "HH:mm"
             print("\n  Current 5h block (ends \(hf.string(from: block.end)), \(remaining) left): "
                 + "\(Format.money(block.cost)) · \(Format.tokens(block.totals.total)) tokens · \(block.totals.messages) msgs")
+        }
+
+        // Both tools in the picture: say how the range splits before the
+        // per-model detail.
+        let sourceLines = UsageSource.allCases.compactMap { source -> (String, TokenTotals, Double)? in
+            let totals = reference.totals(for: source)
+            guard !totals.isEmpty else { return nil }
+            return (source.displayName, totals, reference.cost(for: source))
+        }
+        if sourceLines.count > 1 {
+            print("\n  By source — \(reference.range.label.lowercased())")
+            for (name, totals, cost) in sourceLines {
+                print("    " + name.padded(14) + Format.money(cost).padded(11)
+                    + Format.tokens(totals.total).padded(10) + "\(totals.messages) msgs")
+            }
         }
 
         if !reference.models.isEmpty {
