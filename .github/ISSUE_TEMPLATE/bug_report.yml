@@ -50,7 +50,7 @@ body:
       label: Relevant data or logs
       description: >
         For parser issues, the offending JSONL line from ~/.claude/projects
-        with any sensitive message content redacted (only the `usage`,
-        `model`, `timestamp`, and id fields matter). For crashes, the report
-        from Console.app.
+        or ~/.codex/sessions with any sensitive message content redacted
+        (only the `usage`/`token_count`, `model`, `timestamp`, and id fields
+        matter). For crashes, the report from Console.app.
       render: text
