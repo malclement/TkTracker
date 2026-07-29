@@ -100,10 +100,11 @@ struct StatTile: View {
     }
 }
 
-/// Horizontal share-of-total bar used in table rows.
+/// Horizontal proportion bar — table share columns, plan allowance gauges.
 struct ShareBar: View {
     let fraction: Double
     var color: Color = Theme.accent
+    var height: CGFloat = 5
 
     var body: some View {
         GeometryReader { geo in
@@ -111,10 +112,10 @@ struct ShareBar: View {
                 Capsule().fill(Theme.track)
                 Capsule()
                     .fill(Theme.gaugeFill(color))
-                    .frame(width: max(2, geo.size.width * fraction))
+                    .frame(width: max(2, geo.size.width * min(1, max(0, fraction))))
             }
         }
-        .frame(height: 5)
+        .frame(height: height)
         // The adjacent percentage carries the number; the bar is decoration.
         .accessibilityHidden(true)
     }

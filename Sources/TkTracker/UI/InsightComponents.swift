@@ -12,13 +12,10 @@ struct AllowanceGauge: View {
     var exhaustsAt: Date?
     var footnote: String?
 
+    /// Shares the app-wide escalation thresholds; only the calm end differs from
+    /// a context gauge.
     private var tint: Color {
-        switch gauge.fraction {
-        case ..<0.6: return Theme.accent
-        case ..<0.8: return Theme.warning
-        case ..<0.95: return Theme.serious
-        default: return Theme.critical
-        }
+        Theme.fillColor(gauge.fraction, calm: Theme.accent)
     }
 
     var body: some View {
@@ -31,15 +28,7 @@ struct AllowanceGauge: View {
                     .foregroundStyle(tint)
             }
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.track)
-                    Capsule()
-                        .fill(Theme.gaugeFill(tint))
-                        .frame(width: max(2, geo.size.width * gauge.fraction))
-                }
-            }
-            .frame(height: 6)
+            ShareBar(fraction: gauge.fraction, color: tint, height: 6)
 
             HStack(spacing: 6) {
                 Text("\(Format.money(gauge.used)) of \(Format.money(gauge.limit))")

@@ -136,13 +136,39 @@ enum Theme {
     static let serious = Color.adaptive(light: 0xEC835A, dark: 0xEC835A)
     static let critical = Color.adaptive(light: 0xD03B3B, dark: 0xD03B3B)
 
-    static func contextColor(_ fraction: Double) -> Color {
-        switch fraction {
-        case ..<0.6: return .secondary
-        case ..<0.8: return warning
-        case ..<0.92: return serious
-        default: return critical
+    /// How full is too full, for any "fraction of a limit" meter.
+    ///
+    /// One table so that a context-window gauge and a plan-allowance gauge can
+    /// never disagree about what "nearly full" means — they previously escalated
+    /// at 0.92 and 0.95 respectively, for no reason beyond being written on
+    /// different days. `PlanGauge.isNearLimit` uses the same 0.8 boundary.
+    enum FillLevel {
+        case calm, notable, high, critical
+
+        init(_ fraction: Double) {
+            switch fraction {
+            case ..<0.6: self = .calm
+            case ..<0.8: self = .notable
+            case ..<0.92: self = .high
+            default: self = .critical
+            }
         }
+    }
+
+    /// Status color for a fill fraction. `calm` is the only thing callers vary:
+    /// a context gauge recedes to secondary text, an allowance gauge sits in the
+    /// app accent until it starts mattering.
+    static func fillColor(_ fraction: Double, calm: Color) -> Color {
+        switch FillLevel(fraction) {
+        case .calm: return calm
+        case .notable: return warning
+        case .high: return serious
+        case .critical: return critical
+        }
+    }
+
+    static func contextColor(_ fraction: Double) -> Color {
+        fillColor(fraction, calm: .secondary)
     }
 
     // MARK: Surfaces
