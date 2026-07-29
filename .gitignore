@@ -4,3 +4,13 @@ dist/
 *.xcodeproj
 DerivedData/
 .DS_Store
+
+# Local agent state and worktrees. `.claude/worktrees/` holds full checkouts
+# with their own .build directories, which is a lot of bytes to commit by
+# accident.
+.claude/
+
+# Signing material must never land in the repository.
+*.p12
+*.cer
+*.provisionprofile

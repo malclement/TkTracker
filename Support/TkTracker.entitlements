@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- TkTracker runs with the hardened runtime but NOT the App Sandbox.
+
+	     The sandbox has no entitlement granting read access to arbitrary dotfile
+	     directories in the user's home, and reading ~/.claude/projects and
+	     ~/.codex/sessions is the entire function of the app. A sandboxed build
+	     would have to make the user hand-pick those folders through an open
+	     panel, which is worse for usability and no better for transparency than
+	     shipping unsandboxed and notarized.
+
+	     No exception entitlements are requested: no JIT, no writable executable
+	     memory, no disabled library validation, no DYLD overrides. The hardened
+	     runtime's defaults all apply. -->
+
+	<!-- The opt-in update check (Settings -> Advanced) contacts api.github.com.
+	     Nothing else in the app opens a socket, and with that setting off — its
+	     default — no request is ever made. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

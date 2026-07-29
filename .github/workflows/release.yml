@@ -25,23 +25,84 @@ jobs:
             exit 1
           fi
 
-      - name: Build zipped app bundle
+      # Signing is optional so the workflow still produces an artifact on forks
+      # and before the Developer ID is configured. With the secrets present the
+      # release is Developer ID signed, notarized and stapled; without them it
+      # falls back to ad-hoc and the release notes say so.
+      - name: Detect signing capability
+        id: signing
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::MACOS_CERTIFICATE_P12 not set — building ad-hoc signed, not notarized."
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          # Build in a dedicated keychain so nothing leaks into the runner's
+          # default one and the private key is unlocked only for this job.
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Without this, codesign prompts for keychain access and hangs the job.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "No Developer ID Application identity found in the imported certificate" >&2
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "Signing as: $IDENTITY"
+
+      - name: Build, notarize and staple
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          make notarize \
+            SIGN_IDENTITY="$SIGN_IDENTITY" \
+            APPLE_ID="$APPLE_ID" TEAM_ID="$TEAM_ID" APP_PASSWORD="$APP_PASSWORD"
+          make verify-signature
+
+      - name: Build unsigned zip
+        if: steps.signing.outputs.enabled != 'true'
         run: make zip
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTARIZED: ${{ steps.signing.outputs.enabled }}
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          if [ "$NOTARIZED" = "true" ]; then
+            NOTE=$'> [!NOTE]\n> Signed with a Developer ID and notarized by Apple — open it normally, no quarantine step needed.'
+          else
+            NOTE=$'> [!WARNING]\n> This build is ad-hoc signed and **not notarized**. After unzipping and\n> moving `TkTracker.app` to `/Applications`, clear the quarantine flag once:\n> `xattr -dr com.apple.quarantine /Applications/TkTracker.app`\n> — or build from source with `make install`.'
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "dist/TkTracker-$VERSION.zip" \
             --title "TkTracker $VERSION" \
             --generate-notes \
-            --notes "$(cat <<'EOF'
-          > [!NOTE]
-          > The app is ad-hoc signed, not notarized. After unzipping and moving
-          > `TkTracker.app` to `/Applications`, clear the quarantine flag once:
-          > `xattr -dr com.apple.quarantine /Applications/TkTracker.app`
-          > — or build from source with `make install`.
-          EOF
-          )"
+            --notes "$NOTE"
