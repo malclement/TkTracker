@@ -84,11 +84,24 @@ jobs:
           make notarize \
             SIGN_IDENTITY="$SIGN_IDENTITY" \
             APPLE_ID="$APPLE_ID" TEAM_ID="$TEAM_ID" APP_PASSWORD="$APP_PASSWORD"
-          make verify-signature
+          # Strict: the release notes below assert this build is notarized and
+          # stapled, so an artifact that cannot prove it must fail the job rather
+          # than be published with a false claim.
+          make verify-signature-strict
 
       - name: Build unsigned zip
         if: steps.signing.outputs.enabled != 'true'
         run: make zip
+
+      # Runs even when the build fails: otherwise the Developer ID private key
+      # and its keychain password outlive the job on a self-hosted or reused
+      # runner.
+      - name: Destroy signing keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: |
+          security list-keychain -d user -s login.keychain-db || true
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/cert.p12" || true
 
       - name: Create GitHub release
         env:
@@ -101,8 +114,17 @@ jobs:
           else
             NOTE=$'> [!WARNING]\n> This build is ad-hoc signed and **not notarized**. After unzipping and\n> moving `TkTracker.app` to `/Applications`, clear the quarantine flag once:\n> `xattr -dr com.apple.quarantine /Applications/TkTracker.app`\n> — or build from source with `make install`.'
           fi
+          # Published so the Homebrew cask's sha256 can be updated from the
+          # release itself rather than trusting whatever is at the URL later.
+          DIGEST=$(shasum -a 256 "dist/TkTracker-$VERSION.zip" | cut -d' ' -f1)
+          echo "sha256: $DIGEST"
           gh release create "$GITHUB_REF_NAME" \
             "dist/TkTracker-$VERSION.zip" \
             --title "TkTracker $VERSION" \
             --generate-notes \
-            --notes "$NOTE"
+            --notes "$NOTE
+
+<!-- cask -->
+\`\`\`
+sha256 \"$DIGEST\"
+\`\`\`"

@@ -6,15 +6,21 @@
 #   brew tap malclement/tap
 #   brew install --cask tktracker
 #
-# `sha256` must be updated on every release. Get it with:
+# `version` and `sha256` must both be updated on every release. The release
+# workflow prints the digest; or compute it with:
 #   shasum -a 256 dist/TkTracker-<version>.zip
 #
-# Until releases are notarized, keep `auto_updates false` and leave the caveat
-# in place: Homebrew does not clear the quarantine flag for you, so an ad-hoc
-# signed app still needs the manual step.
+# Do NOT publish this with `sha256 :no_check`. A pinned version with no checksum
+# means Homebrew installs whatever bytes are served at that URL without
+# verifying them, and since releases may be ad-hoc signed, Gatekeeper would not
+# catch a substitution either. `:no_check` is only defensible for a
+# `version :latest` cask where no stable digest exists.
 cask "tktracker" do
   version "1.5.0"
-  sha256 :no_check # replace with the release zip's checksum once published
+  # Placeholder: replace with the real digest before this file goes into a tap.
+  # Left as an obviously-invalid value rather than `:no_check` so an unfinished
+  # cask fails loudly instead of installing unverified bytes.
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
   url "https://github.com/malclement/TkTracker/releases/download/v#{version}/TkTracker-#{version}.zip"
   name "TkTracker"
