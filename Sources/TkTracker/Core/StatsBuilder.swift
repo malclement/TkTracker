@@ -210,6 +210,19 @@ struct DashboardStats: Codable, Sendable {
     func totals(for source: UsageSource) -> TokenTotals { totalsBySource[source.rawValue] ?? TokenTotals() }
     func todayCost(for source: UsageSource) -> Double { todayCostBySource[source.rawValue] ?? 0 }
 
+    /// The single JSON encoding of a stats document.
+    ///
+    /// The GUI export and `report --json` are documented as interchangeable, and
+    /// were not: they configured their own encoders and had already drifted
+    /// (`withoutEscapingSlashes` on one side only). One implementation, so the
+    /// claim stays true.
+    func jsonDocument() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return String(decoding: try encoder.encode(self), as: UTF8.self)
+    }
+
     static let empty = DashboardStats(
         range: .today, generatedAt: .distantPast, totals: TokenTotals(), cost: 0,
         cacheSavings: 0, cacheHitRate: 0, activeSessions: 0, chart: [], chartUnit: .hour,

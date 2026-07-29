@@ -12,20 +12,36 @@ enum CLIReport {
     /// Scan the requested sources, sharing the app's caches and archives.
     /// Extracted so `report`, `--watch` and the Shortcuts intents all agree about
     /// what "current usage" means.
+    /// - Parameter persist: whether to write back the scan cache and archive.
+    ///   `false` makes this a pure read — used by the Shortcuts intents, which
+    ///   should answer a question without taking ownership of cache state the
+    ///   running app also writes.
+    /// - Parameter pipelines: overrides the default per-source roots and cache
+    ///   locations. Injectable so this can be tested against a temporary tree
+    ///   instead of the user's real data and Application Support directory.
     static func scan(
         sources wanted: Set<UsageSource>,
         explicitSource: UsageSource? = nil,
-        includeHistory: Bool = true
+        includeHistory: Bool = true,
+        persist: Bool = true,
+        pipelines: [(core: ScanCore, archive: HistoryArchive)]? = nil
     ) -> ScanOutcome {
         var all: [FileDigest] = []
         var scannedRoots: [String] = []
         var missingRoots: [String] = []
-        for source in UsageSource.allCases where wanted.contains(source) {
-            let core = ScanCore(
-                source: source,
-                root: ScanCore.defaultRoot(for: source),
-                cacheURL: ScanCore.defaultCacheURL(for: source)
+        let available = pipelines ?? UsageSource.allCases.map { source in
+            (
+                core: ScanCore(
+                    source: source,
+                    root: ScanCore.defaultRoot(for: source),
+                    cacheURL: ScanCore.defaultCacheURL(for: source)
+                ),
+                archive: HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
             )
+        }
+        for source in UsageSource.allCases where wanted.contains(source) {
+            guard let pipeline = available.first(where: { $0.core.source == source }) else { continue }
+            let core = pipeline.core
             guard FileManager.default.fileExists(atPath: core.root.path) else {
                 // A source the user explicitly asked for must not be skipped quietly.
                 if explicitSource == source {
@@ -39,21 +55,23 @@ enum CLIReport {
             }
             scannedRoots.append(core.root.path)
             let cache = core.loadCache()
-            let archive = HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
+            let archive = pipeline.archive
             let archiveCache = archive.load()
             var seededDigests = cache.digests
             var seededClaims = cache.claims
             HistoryArchive.seed(archive: archiveCache, intoDigests: &seededDigests, claims: &seededClaims)
             let result = core.refreshed(digests: seededDigests, claims: seededClaims)
-            // A migrated cache is rewritten even when nothing else changed, so
-            // the upgrade converts once instead of on every invocation.
-            if result.changed || cache.wasMigrated {
-                core.saveCache(digests: result.digests, claims: result.claims)
-            }
-            if let updated = HistoryArchive.updated(archiveCache, digests: result.digests, claims: result.claims) {
-                archive.save(updated)
-            } else if archiveCache.wasMigrated {
-                archive.save(archiveCache)
+            if persist {
+                // A migrated cache is rewritten even when nothing else changed,
+                // so the upgrade converts once instead of on every invocation.
+                if result.changed || cache.wasMigrated {
+                    core.saveCache(digests: result.digests, claims: result.claims)
+                }
+                if let updated = HistoryArchive.updated(archiveCache, digests: result.digests, claims: result.claims) {
+                    archive.save(updated)
+                } else if archiveCache.wasMigrated {
+                    archive.save(archiveCache)
+                }
             }
             all += result.digests.values
         }
@@ -165,19 +183,33 @@ enum CLIReport {
         }
 
         if json {
-            let stats = StatsBuilder.build(digests: all, range: range ?? .all)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            if let data = try? encoder.encode(stats), let s = String(data: data, encoding: .utf8) {
-                print(s)
+            // Same plan and same encoder as the GUI export, so the two documents
+            // are genuinely interchangeable rather than only claimed to be.
+            let stats = StatsBuilder.build(digests: all, range: range ?? .all, plan: appPlan())
+            do {
+                print(try stats.jsonDocument())
                 return 0
+            } catch {
+                FileHandle.standardError.write(Data("could not encode stats: \(error)\n".utf8))
+                return 1
             }
-            return 1
         }
 
         printReport(digests: all, focus: range)
         return 0
+    }
+
+    /// The plan configured in the app.
+    ///
+    /// Read from the app's own preferences domain rather than
+    /// `UserDefaults.standard`: a bare CLI binary has no bundle identifier, so
+    /// `standard` would be a different domain and `--json` would report no plan
+    /// while the GUI reported one.
+    static func appPlan() -> UsagePlan {
+        guard let defaults = UserDefaults(suiteName: "com.clementmalige.tktracker") else {
+            return .none
+        }
+        return UsagePlan.load(from: defaults)
     }
 
     /// One-bit flag shared between a signal handler and the watch loop.
