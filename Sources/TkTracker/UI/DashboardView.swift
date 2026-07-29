@@ -14,7 +14,7 @@ extension ChartUnit {
 }
 
 enum DashboardSection: String, CaseIterable, Identifiable {
-    case overview, projects, sessions, models
+    case overview, projects, branches, sessions, models
 
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
@@ -22,6 +22,7 @@ enum DashboardSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: return "gauge.with.dots.needle.50percent"
         case .projects: return "folder"
+        case .branches: return "arrow.triangle.branch"
         case .sessions: return "bubble.left.and.text.bubble.right"
         case .models: return "cpu"
         }
@@ -43,6 +44,7 @@ struct DashboardView: View {
             switch store.dashboardSection ?? .overview {
             case .overview: OverviewView()
             case .projects: ProjectsView()
+            case .branches: BranchesView()
             case .sessions: SessionsView()
             case .models: ModelsView()
             }
@@ -135,33 +137,12 @@ struct OverviewView: View {
         let stats = store.stats
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 12) {
-                    StatTile(
-                        label: "Spend",
-                        value: Format.money(stats.cost),
-                        icon: "dollarsign.circle",
-                        sub: spendSub(stats),
-                        delta: stats.range == .today ? stats.todayVsYesterday : nil,
-                        deltaLabel: "vs yesterday by now"
-                    )
-                    StatTile(
-                        label: "Tokens",
-                        value: Format.tokens(stats.totals.total),
-                        icon: "number",
-                        sub: "\(Format.tokens(stats.totals.input)) in · \(Format.tokens(stats.totals.output)) out"
-                    )
-                    StatTile(
-                        label: "Cache hit rate",
-                        value: Format.percent(stats.cacheHitRate),
-                        icon: "bolt.fill",
-                        sub: stats.cacheHitRate > 0 ? "of prompt tokens" : "no cached prompts yet"
-                    )
-                    StatTile(
-                        label: "Sessions",
-                        value: String(stats.sessions.count),
-                        icon: "bubble.left.and.bubble.right",
-                        sub: stats.activeSessions > 0 ? "\(stats.activeSessions) live now" : "in range"
-                    )
+                banners
+
+                tiles(stats)
+
+                if stats.blockGauge != nil || stats.weeklyGauge != nil {
+                    allowanceCard(stats)
                 }
 
                 spendChart(stats)
@@ -173,6 +154,10 @@ struct OverviewView: View {
                         blockCard(stats)
                     }
                     .frame(maxWidth: .infinity)
+                }
+
+                if !stats.heatmap.isEmpty {
+                    ActivityHeatmap(cells: stats.heatmap).card()
                 }
 
                 if let coverage = coverageNote(stats) {
@@ -193,14 +178,126 @@ struct OverviewView: View {
                 FilterBar()
             }
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    exportCSV()
+                Menu {
+                    Button("Export CSV…") { export(.csv) }
+                    Button("Export JSON…") { export(.json) }
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
-                .help("Export current range as CSV (per day, source and model)")
+                .help("Export the current range — CSV per day/source/model, or the full stats as JSON")
             }
         }
+    }
+
+    /// The four headline tiles. Two slots are adaptive: today's view swaps
+    /// Tokens for a projection, and a configured plan swaps Sessions for the
+    /// value multiple. Split out of the body because the whole row in one
+    /// expression pushed the type checker past its budget.
+    private func tiles(_ stats: DashboardStats) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            StatTile(
+                label: "Spend",
+                value: Format.money(stats.cost),
+                icon: "dollarsign.circle",
+                sub: spendSub(stats),
+                delta: stats.range == .today ? stats.todayVsYesterday : nil,
+                deltaLabel: "vs yesterday by now"
+            )
+            secondTile(stats)
+            StatTile(
+                label: "Cache hit rate",
+                value: Format.percent(stats.cacheHitRate),
+                icon: "bolt.fill",
+                sub: stats.cacheHitRate > 0 ? "of prompt tokens" : "no cached prompts yet"
+            )
+            fourthTile(stats)
+        }
+    }
+
+    @ViewBuilder
+    private func secondTile(_ stats: DashboardStats) -> some View {
+        if stats.range == .today, let projected = stats.projectedTodayCost {
+            StatTile(
+                label: "Projected today",
+                value: Format.money(projected),
+                icon: "chart.line.uptrend.xyaxis",
+                sub: "from how your days usually run"
+            )
+            .help("Today's spend divided by the share of a typical day's spend that has normally landed by this hour, measured over the last three weeks of active days.")
+        } else {
+            StatTile(
+                label: "Tokens",
+                value: Format.tokens(stats.totals.total),
+                icon: "number",
+                sub: "\(Format.tokens(stats.totals.input)) in · \(Format.tokens(stats.totals.output)) out"
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func fourthTile(_ stats: DashboardStats) -> some View {
+        if let multiple = stats.planValueMultiple {
+            StatTile(
+                label: "Plan value",
+                value: Format.multiple(multiple),
+                icon: "creditcard",
+                sub: "\(Format.money(stats.rollingMonthCost)) of \(Format.money(store.plan.monthlyCost)) · 30d"
+            )
+            .help("API-equivalent value over the last 30 days, divided by what your plan costs per month.")
+        } else {
+            StatTile(
+                label: "Sessions",
+                value: String(stats.sessions.count),
+                icon: "bubble.left.and.bubble.right",
+                sub: stats.activeSessions > 0 ? "\(stats.activeSessions) live now" : "in range"
+            )
+        }
+    }
+
+    /// Scan problems and update availability, above everything else — a wrong
+    /// number is worse than a missing one, so say when the data is incomplete.
+    @ViewBuilder
+    private var banners: some View {
+        if let problem = store.scanHealth.problemSummary {
+            NoticeBanner(
+                text: "\(problem). Figures below may be incomplete.",
+                actionTitle: "Details",
+                action: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+            )
+        }
+        if case .available(let version, let url, _) = store.updateChecker.state {
+            NoticeBanner(
+                text: "TkTracker \(version) is available.",
+                icon: "arrow.down.circle.fill",
+                tint: Theme.accent,
+                actionTitle: "Release notes",
+                action: { NSWorkspace.shared.open(url) }
+            )
+        }
+    }
+
+    /// Plan allowance gauges. Only rendered when the user configured a limit.
+    private func allowanceCard(_ stats: DashboardStats) -> some View {
+        HStack(alignment: .top, spacing: 20) {
+            if let gauge = stats.blockGauge {
+                AllowanceGauge(
+                    title: "5-hour block",
+                    gauge: gauge,
+                    exhaustsAt: gauge.exhaustion(ratePerHour: stats.burnRatePerHour, now: stats.generatedAt),
+                    footnote: stats.block.map {
+                        "Window ends \($0.end.formatted(date: .omitted, time: .shortened))"
+                    }
+                )
+            }
+            if let gauge = stats.weeklyGauge {
+                AllowanceGauge(
+                    title: "This week",
+                    gauge: gauge,
+                    footnote: "Rolling 7 days · \(Format.money(gauge.remaining)) of allowance left"
+                )
+            }
+        }
+        .card()
     }
 
     private func spendSub(_ stats: DashboardStats) -> String? {
@@ -208,14 +305,26 @@ struct OverviewView: View {
         return stats.todayVsYesterday == nil ? "since midnight" : nil
     }
 
-    private func exportCSV() {
+    private enum ExportFormat {
+        case csv, json
+        var type: UTType { self == .csv ? .commaSeparatedText : .json }
+        var ext: String { self == .csv ? "csv" : "json" }
+    }
+
+    private func export(_ format: ExportFormat) {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.commaSeparatedText]
-        panel.nameFieldStringValue = "tktracker-\(store.stats.range.rawValue).csv"
+        panel.allowedContentTypes = [format.type]
+        panel.nameFieldStringValue = "tktracker-\(store.stats.range.rawValue).\(format.ext)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try Data(store.csvForCurrentRange().utf8).write(to: url)
+            let text: String
+            switch format {
+            case .csv: text = store.csvForCurrentRange()
+            case .json: text = try store.jsonForCurrentRange()
+            }
+            try Data(text.utf8).write(to: url)
         } catch {
+            Diagnostics.app.error("export failed: \(error.localizedDescription, privacy: .public)")
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Export failed"
@@ -311,8 +420,20 @@ struct OverviewView: View {
                 }
             }
             .frame(height: 260)
+            .accessibilityLabel(metric == .cost ? "Spend by model over time" : "Tokens by model over time")
+            .accessibilityValue(chartSummary(stats))
         }
         .card()
+    }
+
+    /// Charts are unreadable to VoiceOver by default. Summarize the shape rather
+    /// than enumerating every bar.
+    private func chartSummary(_ stats: DashboardStats) -> String {
+        guard !stats.chart.isEmpty else { return "no data in this range" }
+        let unit = stats.chartUnit == .hour ? "hour" : (stats.chartUnit == .week ? "week" : "day")
+        let top = stats.models.prefix(3).map { "\($0.shortName) \(Format.money($0.cost))" }
+        return "\(stats.chart.count) \(unit) segments, total \(Format.money(stats.cost)). "
+            + "Top models: \(top.joined(separator: ", "))."
     }
 
     private func presentModelNames(_ stats: DashboardStats) -> [String] {

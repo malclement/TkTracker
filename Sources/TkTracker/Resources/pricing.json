@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "updated": "2026-07-29",
+  "note": "USD per million tokens, vendor list prices, standard tier. Rules are matched in order against the lowercased model id; the first whose `match` substrings ALL appear wins. `skip: true` means the model is deliberately unpriced (tracked in tokens, flagged 'no pricing') rather than guessed at.",
+  "webSearchPer1000": 10.0,
+  "contextWindows": [
+    { "match": ["[1m]"], "window": 1000000 },
+    { "match": ["gpt"], "window": 272000 },
+    { "match": ["codex"], "window": 272000 }
+  ],
+  "defaultContextWindow": 200000,
+  "rules": [
+    { "match": ["synthetic"], "skip": true },
+
+    { "match": ["codex-mini-latest"], "vendor": "openai", "input": 1.5, "output": 6, "comment": "pre-GPT-5 codex" },
+    { "match": ["codex-mini"], "vendor": "openai", "input": 0.25, "output": 2, "comment": "gpt-5.1-codex-mini" },
+    { "match": ["gpt-5.5"], "vendor": "openai", "input": 5, "output": 30 },
+    { "match": ["gpt-5.4-mini"], "vendor": "openai", "input": 0.75, "output": 4.5 },
+    { "match": ["gpt-5.4-nano"], "vendor": "openai", "input": 0.2, "output": 1.25 },
+    { "match": ["gpt-5.4"], "vendor": "openai", "input": 2.5, "output": 15 },
+    { "match": ["gpt-5.3"], "vendor": "openai", "input": 1.75, "output": 14, "comment": "gpt-5.3-codex" },
+    { "match": ["gpt-5.2"], "vendor": "openai", "input": 0.875, "output": 7 },
+    { "match": ["gpt-5", "mini"], "vendor": "openai", "input": 0.25, "output": 2 },
+    { "match": ["gpt-5", "nano"], "vendor": "openai", "input": 0.05, "output": 0.4 },
+    { "match": ["gpt-5"], "vendor": "openai", "input": 1.25, "output": 10, "comment": "gpt-5 / 5.1 (+codex, max)" },
+    { "match": ["gpt"], "skip": true, "comment": "unknown OpenAI generation — never guessed" },
+    { "match": ["codex"], "skip": true, "comment": "unknown Codex generation — never guessed" },
+
+    { "match": ["fable"], "vendor": "anthropic", "input": 10, "output": 50 },
+    { "match": ["mythos"], "vendor": "anthropic", "input": 10, "output": 50 },
+    { "match": ["opus-4-5"], "vendor": "anthropic", "input": 5, "output": 25 },
+    { "match": ["opus-4-6"], "vendor": "anthropic", "input": 5, "output": 25 },
+    { "match": ["opus-4-7"], "vendor": "anthropic", "input": 5, "output": 25 },
+    { "match": ["opus-4-8"], "vendor": "anthropic", "input": 5, "output": 25 },
+    { "match": ["opus"], "vendor": "anthropic", "input": 15, "output": 75, "comment": "opus 4.1 and older" },
+    { "match": ["sonnet"], "vendor": "anthropic", "input": 3, "output": 15, "comment": "sticker price; intro pricing through 2026-08-31 makes this a slight overestimate" },
+    { "match": ["haiku-4"], "vendor": "anthropic", "input": 1, "output": 5 },
+    { "match": ["3-5-haiku"], "vendor": "anthropic", "input": 0.8, "output": 4 },
+    { "match": ["haiku-3-5"], "vendor": "anthropic", "input": 0.8, "output": 4 },
+    { "match": ["haiku"], "vendor": "anthropic", "input": 0.25, "output": 1.25 },
+    { "match": ["claude-2"], "vendor": "anthropic", "input": 8, "output": 24 },
+    { "match": ["instant"], "vendor": "anthropic", "input": 0.8, "output": 2.4 }
+  ]
+}

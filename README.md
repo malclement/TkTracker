@@ -29,19 +29,38 @@ breakdowns. Everything stays on your Mac.
   cost and a context-window gauge.
 - **Daily budget** — set a USD threshold in Settings; crossing it flips the menu
   bar icon to a warning, flags the popover, and posts one notification per day.
+- **Plan allowances** — pick your subscription in Settings → Plan and the
+  dashboard gauges how much of the current 5-hour block and the rolling week
+  it has consumed, with a projected exhaustion time while sessions run, and one
+  notification per block and per week at 80%. Vendors state limits in messages
+  and rolling windows rather than dollars, so **every limit is yours to set**:
+  the presets are starting points to calibrate against your own throttling, and
+  with no plan selected TkTracker shows no limits at all.
+- **Plan value** — enter what the plan costs and see the trailing-30-day
+  API-equivalent value against it, e.g. `×9.2`.
 - **Dashboard** — Today / 7D / 30D / 90D / All ranges:
   - stacked spend-by-model chart (hover for a breakdown), cost ↔ tokens toggle;
     buckets adapt to the span — hourly today, daily up to ~4 months, weekly beyond
-  - "vs yesterday by now" delta on today's spend tile
+  - "vs yesterday by now" delta, and a **projected end-of-day total** derived
+    from the share of a typical day's spend that has historically landed by
+    this hour (not a burn-rate extrapolation to midnight, which is wrong every
+    evening); silent until there are enough comparable days to say anything
   - model share donut, prompt-cache hit rate and estimated savings
+  - **activity heatmap** — weekday × hour-of-day, so you can see when you
+    actually work
   - sortable tables for projects (double-click to drill into its sessions),
-    sessions (searchable, with `claude --resume` / `codex resume` copy in the
-    context menu) and models
-  - CSV export of the current range (per day, source and model)
+    **branches** (per-feature cost), sessions (searchable by title, project,
+    branch or model, with duration, $/hour, and `claude --resume` /
+    `codex resume` copy in the context menu) and models
+  - CSV and JSON export of the current range
 - **CLI** — `TkTracker report [--json|--csv] [--range today|week|month|quarter|all]
-  [--source claude|codex|all]` prints the same numbers in the terminal, sharing
-  the app's scan caches. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored for
-  non-default data locations.
+  [--source claude|codex|all] [--watch]` prints the same numbers in the
+  terminal, sharing the app's scan caches; `--watch` redraws live.
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored for non-default data
+  locations.
+- **Shortcuts** — App Intents for today's spend, spend over a range, the
+  current 5-hour block, and opening the dashboard. They read the same caches,
+  so a shortcut and the popover can never disagree.
 - **Accurate accounting**
   - deduplicates multi-line assistant turns by `(messageId, requestId)`
   - a global claim table keeps usage counted **exactly once** even when session
@@ -91,14 +110,45 @@ Other targets: `make test` (unit tests), `make build` (debug), `make zip`
 
 Download `TkTracker-<version>.zip` from the
 [latest release](https://github.com/malclement/TkTracker/releases/latest),
-unzip, and move `TkTracker.app` to `/Applications`. The app is ad-hoc signed,
-not notarized, so clear the quarantine flag once:
+unzip, and move `TkTracker.app` to `/Applications`.
+
+Releases built with a Developer ID are signed with the hardened runtime,
+notarized and stapled — open them normally. Builds made without those
+credentials are ad-hoc signed and say so in their release notes; for those,
+clear the quarantine flag once:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/TkTracker.app
 ```
 
 Enable **Launch at login** in Settings (⚙ in the popover) once installed.
+
+### Homebrew
+
+A cask lives in [`Casks/tktracker.rb`](Casks/tktracker.rb) for publishing to a
+tap:
+
+```sh
+brew tap malclement/tap
+brew install --cask tktracker
+```
+
+### Signing your own build
+
+`make app` ad-hoc signs by default, which is fine locally but quarantined
+everywhere else. To produce a distributable build:
+
+```sh
+make notarize SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+              NOTARY_PROFILE=tktracker
+make verify-signature
+```
+
+(Store the notary profile once with `xcrun notarytool store-credentials`.) In
+CI, set the `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`,
+`MACOS_KEYCHAIN_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID` and
+`APPLE_APP_PASSWORD` secrets; the release workflow detects them and falls back
+to an ad-hoc build when they are absent.
 
 ## CLI
 
@@ -110,6 +160,14 @@ Enable **Launch at login** in Settings (⚙ in the popover) once installed.
 ```
 
 ## How costs are computed
+
+Rates live in [`pricing.json`](Sources/TkTracker/Resources/pricing.json) inside
+the bundle, so a vendor price change is a data edit rather than a code change —
+and you can correct one yourself in **Settings → Pricing** without waiting for a
+release (useful for negotiated rates, or when a published price moves before
+TkTracker catches up). Overrides win over the shipped table and survive updates.
+`PricingCatalog.builtIn` mirrors the file in Swift as a fallback for builds that
+cannot reach the resource bundle, and a test asserts the two agree exactly.
 
 Costs are estimated from vendor list prices per MTok — Anthropic (Fable 5
 $10/$50, Opus 4.5–4.8 $5/$25, older Opus $15/$75, Sonnet $3/$15, Haiku 4.5
@@ -138,8 +196,15 @@ Caveats:
 
 Both parsing pipelines are verified against an independent reference
 implementation over real data (exact match on cost, tokens and message count —
-for Claude transcripts and for a 455MB / 335-file Codex corpus alike), plus a
-unit-test suite (`swift test`, swift-testing).
+for Claude transcripts and for a 455MB / 335-file Codex corpus alike). That
+check ran on real transcripts and cannot be redistributed, so the same
+guarantees are pinned in CI by a **golden corpus**: a small committed fixture
+set whose expected figures are derived by hand from the published rates rather
+than captured from a run — see
+[`EXPECTED.md`](Tests/TkTrackerTests/Fixtures/EXPECTED.md). It covers dedupe
+within a file, the cross-file claim table, every cache tier at its own
+multiplier, web-search billing, Codex's cached-input split, and Claude/Codex
+merging into one project. `swift test` runs it alongside the rest of the suite.
 
 ## Architecture
 
@@ -151,16 +216,23 @@ Sources/TkTracker
 │   ├── CodexParser.swift    incremental Codex rollout parser (per-call token
 │   │                        deltas, turn-context model attribution)
 │   ├── UsageSource.swift    the claude/codex axis and the UI's source lens
-│   ├── ScanCore.swift       discovery, change detection, parallel scan, claim
-│   │                        table (cross-file exactly-once), per-source cache IO
+│   ├── ScanCore.swift       discovery, change detection, parallel scan,
+│   │                        per-source cache IO + format migration
+│   ├── ClaimMap.swift       cross-file exactly-once ownership, owner paths
+│   │                        interned so the table stays small as it grows
 │   ├── HistoryArchive.swift durable exact record of pruned sessions; survives
 │   │                        cache resets so estimates never replace exact data
 │   ├── UsageEngine.swift    actor owning one scan pipeline per source
-│   ├── StatsBuilder.swift   pure aggregation: ranges, charts, blocks, rows
-│   ├── Pricing.swift        model pricing + context windows (both vendors)
+│   ├── StatsBuilder.swift   pure aggregation: ranges, charts, blocks, gauges,
+│   │                        projection, heatmap, rows
+│   ├── UsagePlan.swift      subscription limits and allowance gauges
+│   ├── Pricing.swift        cost/context-window entry points
+│   ├── PricingCatalog.swift rates from Resources/pricing.json + user overrides
+│   ├── Diagnostics.swift    os.Logger subsystems and the redacted self-report
 │   └── ProjectsWatcher.swift  FSEvents on ~/.claude/projects & ~/.codex/sessions
-├── App / UI                 SwiftUI: MenuBarExtra, dashboard, Swift Charts
-└── CLI                      terminal report
+├── App / UI                 SwiftUI: MenuBarExtra, dashboard, Swift Charts,
+│                            App Intents, opt-in update check
+└── CLI                      terminal report (+ --watch)
 ```
 
 Per-file usage is aggregated into `(UTC hour, model)` buckets — compact enough
@@ -188,7 +260,15 @@ never repaint a series, and identity is never carried by color alone.
 ## Privacy
 
 TkTracker reads local JSONL files only. Nothing leaves your machine — no
-network access, no telemetry.
+telemetry, no analytics, no phoning home.
+
+The single exception is opt-in and off by default: enabling **Settings →
+Advanced → Check for updates** lets the app fetch the public GitHub releases
+page once a day to tell you a new version exists. It sends nothing about you or
+your usage, downloads nothing, and makes no request at all while the setting is
+off. **Settings → Copy diagnostics** produces a paste-ready report of counts,
+sizes and timings for bug reports — it never includes project paths, session
+titles or prompt text.
 
 Its scan caches and history archives (`~/Library/Application Support/TkTracker/`)
 store the aggregated numbers plus the session metadata shown in the UI —

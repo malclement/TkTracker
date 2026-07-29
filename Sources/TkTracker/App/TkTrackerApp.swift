@@ -32,6 +32,9 @@ struct TkTrackerApp: App {
 /// Rendered in the status bar from launch — also the reliable place to boot the store.
 private struct MenuBarLabel: View {
     @State private var store = UsageStore.shared
+    /// The status item is always in the scene graph, so this is the one view
+    /// guaranteed to be alive when a Shortcut asks for the dashboard.
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 3) {
@@ -40,7 +43,16 @@ private struct MenuBarLabel: View {
                 Text(title).monospacedDigit()
             }
         }
+        // The status item is TkTracker's primary output surface; without this it
+        // reads to VoiceOver as an unlabeled image plus a bare number.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("TkTracker")
+        .accessibilityValue(store.menuBarAccessibilityValue)
         .task { await store.startIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(for: .tkTrackerOpenDashboard)) { _ in
+            openWindow(id: "dashboard")
+            WindowFocus.promote()
+        }
     }
 }
 

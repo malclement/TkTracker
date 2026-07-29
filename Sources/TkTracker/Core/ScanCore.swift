@@ -1,38 +1,16 @@
 import Foundation
 
-/// Thread-safe ownership registry for usage events. The first file to claim a
-/// (messageId:requestId) key owns it; copies of the same event in other files
-/// (session resumes, forks) are skipped so spend is never double-counted.
-final class ClaimTable: @unchecked Sendable {
-    private var claims: [String: String]
-    private let lock = NSLock()
-
-    init(claims: [String: String] = [:]) {
-        self.claims = claims
-    }
-
-    /// True if `owner` may count this event (fresh claim, or re-parse by the owner).
-    func claim(_ key: String, owner: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if let existing = claims[key] { return existing == owner }
-        claims[key] = owner
-        return true
-    }
-
-    var snapshot: [String: String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return claims
-    }
-}
-
 /// Synchronous scanning primitives shared by the app engine and the CLI:
 /// file discovery, change detection, parallel incremental parsing, cache IO.
 /// One instance per usage source — same machinery, different root, parser and
 /// cache file.
 struct ScanCore: Sendable {
-    static let cacheVersion = 2
+    /// Bumped to 3 in 1.5.0 when claim-table owner paths were interned. Older
+    /// caches are migrated on read (see `DigestCache.init(from:)`), never dropped.
+    static let cacheVersion = 3
+    /// Oldest on-disk format still understood. A cache below this, or above
+    /// `cacheVersion` (a downgrade), is discarded rather than misread.
+    static let minimumCacheVersion = 2
 
     var source: UsageSource = .claude
     let root: URL
@@ -125,6 +103,20 @@ struct ScanCore: Sendable {
         let mtime: Double
     }
 
+    /// Fully resolved filesystem path, following symlinks.
+    ///
+    /// The enumerator hands back canonical paths, so a root that reaches the
+    /// same directory through a symlink (`/var/...` vs `/private/var/...`, or a
+    /// symlinked `CLAUDE_CONFIG_DIR`) would fail the prefix check below and make
+    /// every project name the first component of the *absolute* path. That
+    /// produced silently wrong project grouping rather than an error, so both
+    /// sides are canonicalized before comparing.
+    static func canonicalPath(_ url: URL) -> String {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(url.path, &buffer) != nil else { return url.path }
+        return String(cString: buffer)
+    }
+
     func listFiles() -> [FileMeta] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
@@ -133,7 +125,7 @@ struct ScanCore: Sendable {
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
 
-        let rootPath = root.path
+        let rootPath = Self.canonicalPath(root)
         var out: [FileMeta] = []
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
             guard let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]),
@@ -158,13 +150,17 @@ struct ScanCore: Sendable {
 
     struct RefreshResult: Sendable {
         var digests: [String: FileDigest]
-        var claims: [String: String]
+        var claims: ClaimMap
         var changed: Bool
+        /// Files that could not be read this pass. Surfaced rather than swallowed,
+        /// so a permissions problem shows up as a warning instead of quietly
+        /// lower numbers.
+        var unreadable: [String] = []
     }
 
     /// Stat every session file, re-parse only what changed. Pure with respect to
     /// the inputs; returns the updated digests, claim table and a change flag.
-    func refreshed(digests: [String: FileDigest], claims: [String: String]) -> RefreshResult {
+    func refreshed(digests: [String: FileDigest], claims: ClaimMap) -> RefreshResult {
         let files = listFiles()
         var result = digests
         var changed = false
@@ -177,6 +173,27 @@ struct ScanCore: Sendable {
             changed = true
         }
 
+        // Repair project attribution on digests that will not be re-parsed.
+        //
+        // `projectDir` is computed during discovery but only stored when a file is
+        // actually parsed, and the change-detection filter below skips anything
+        // whose size and mtime are unchanged. So the symlinked-root fix would
+        // otherwise never reach an existing install: every already-scanned session
+        // would keep its wrong project name until the file happened to grow, which
+        // for a completed session is never.
+        if source == .claude {
+            for meta in files {
+                guard var digest = result[meta.url.path],
+                      digest.projectDir != meta.projectDir,
+                      !meta.projectDir.isEmpty
+                else { continue }
+                Diagnostics.scan.notice("repaired project attribution for a cached session")
+                digest.projectDir = meta.projectDir
+                result[meta.url.path] = digest
+                changed = true
+            }
+        }
+
         // Oldest-first biases the cold-scan claim race toward original sessions.
         // Exactly-once counting never depends on order — only display attribution
         // does, and claims persist, so attribution is stable after the first scan.
@@ -186,17 +203,35 @@ struct ScanCore: Sendable {
                 return d.missing || d.size != meta.size || abs(d.mtime - meta.mtime) > 0.0005
             }
             .sorted { $0.mtime < $1.mtime }
-        guard !work.isEmpty else {
-            return RefreshResult(digests: result, claims: claims, changed: changed)
+
+        // A changed file we cannot open would otherwise vanish into the parsers'
+        // `try?` and show up only as quietly lower numbers. Check once, up front,
+        // and keep the last known digest for anything unreadable.
+        let fm = FileManager.default
+        var unreadable: [String] = []
+        let readable = work.filter { meta in
+            guard fm.isReadableFile(atPath: meta.url.path) else {
+                unreadable.append(meta.url.path)
+                return false
+            }
+            return true
+        }
+
+        if !unreadable.isEmpty {
+            Diagnostics.scan.error("\(unreadable.count) session file(s) unreadable; keeping last known digests")
+        }
+
+        guard !readable.isEmpty else {
+            return RefreshResult(digests: result, claims: claims, changed: changed, unreadable: unreadable)
         }
 
         let source = self.source
-        let claimTable = ClaimTable(claims: claims)
-        var scanned = [FileDigest?](repeating: nil, count: work.count)
+        let claimTable = ClaimTable(claims)
+        var scanned = [FileDigest?](repeating: nil, count: readable.count)
         scanned.withUnsafeMutableBufferPointer { buffer in
             let base = buffer.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: work.count) { i in
-                let meta = work[i]
+            DispatchQueue.concurrentPerform(iterations: readable.count) { i in
+                let meta = readable[i]
                 switch source {
                 case .claude:
                     base[i] = JSONLParser.scan(
@@ -222,16 +257,41 @@ struct ScanCore: Sendable {
             result[digest.path] = digest
             changed = true
         }
-        return RefreshResult(digests: result, claims: claimTable.snapshot, changed: true)
+        return RefreshResult(
+            digests: result,
+            claims: claimTable.snapshot,
+            changed: true,
+            unreadable: unreadable
+        )
     }
 
     // MARK: - Cache
 
     func loadCache() -> DigestCache {
-        guard let data = try? Data(contentsOf: cacheURL),
-              var cache = try? JSONDecoder().decode(DigestCache.self, from: data),
-              cache.version == Self.cacheVersion
-        else { return DigestCache(version: Self.cacheVersion, digests: [:], claims: [:]) }
+        let empty = DigestCache(version: Self.cacheVersion, digests: [:], claims: ClaimMap())
+        guard FileManager.default.fileExists(atPath: cacheURL.path) else { return empty }
+        guard let data = try? Data(contentsOf: cacheURL) else {
+            Diagnostics.scan.error("cache unreadable at \(self.cacheURL.lastPathComponent, privacy: .public)")
+            return empty
+        }
+        guard var cache = try? JSONDecoder().decode(DigestCache.self, from: data) else {
+            Diagnostics.scan.error("cache corrupt at \(self.cacheURL.lastPathComponent, privacy: .public); rebuilding")
+            return empty
+        }
+        // Below the floor is unreadable; above it is a downgrade from a future
+        // build. Anything in between migrated on decode and is rewritten in the
+        // current shape on the next save.
+        guard cache.version >= Self.minimumCacheVersion, cache.version <= Self.cacheVersion else {
+            Diagnostics.scan.notice("cache version \(cache.version) unsupported; rebuilding")
+            return empty
+        }
+        if cache.version != Self.cacheVersion {
+            Diagnostics.scan.notice(
+                "migrated cache v\(cache.version) -> v\(Self.cacheVersion), \(cache.claims.count) claims"
+            )
+            cache.version = Self.cacheVersion
+            cache.wasMigrated = true
+        }
         // `source` isn't persisted — the per-source cache file implies it.
         if source != .claude {
             for (path, var digest) in cache.digests {
@@ -242,12 +302,21 @@ struct ScanCore: Sendable {
         return cache
     }
 
-    func saveCache(digests: [String: FileDigest], claims: [String: String]) {
+    @discardableResult
+    func saveCache(digests: [String: FileDigest], claims: ClaimMap) -> Bool {
         let cache = DigestCache(version: Self.cacheVersion, digests: digests, claims: claims)
-        guard let data = try? JSONEncoder().encode(cache) else { return }
-        let dir = cacheURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: cacheURL, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(cache)
+            let dir = cacheURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try data.write(to: cacheURL, options: .atomic)
+            return true
+        } catch {
+            Diagnostics.scan.error(
+                "cache save failed for \(self.cacheURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
     }
 
     func clearCache() {

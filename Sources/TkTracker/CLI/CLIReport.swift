@@ -3,8 +3,96 @@ import Foundation
 /// `tktracker report [--json] [--range today|week|month|quarter|all] [--source claude|codex|all]`
 /// Terminal companion to the menu bar app; shares the same scan caches.
 enum CLIReport {
+    /// Outcome of collecting digests across the requested sources.
+    enum ScanOutcome {
+        case success(digests: [FileDigest], notes: [String])
+        case failure(message: String, code: Int32)
+    }
+
+    /// Scan the requested sources, sharing the app's caches and archives.
+    /// Extracted so `report`, `--watch` and the Shortcuts intents all agree about
+    /// what "current usage" means.
+    /// - Parameter persist: whether to write back the scan cache and archive.
+    ///   `false` makes this a pure read — used by the Shortcuts intents, which
+    ///   should answer a question without taking ownership of cache state the
+    ///   running app also writes.
+    /// - Parameter pipelines: overrides the default per-source roots and cache
+    ///   locations. Injectable so this can be tested against a temporary tree
+    ///   instead of the user's real data and Application Support directory.
+    static func scan(
+        sources wanted: Set<UsageSource>,
+        explicitSource: UsageSource? = nil,
+        includeHistory: Bool = true,
+        persist: Bool = true,
+        pipelines: [(core: ScanCore, archive: HistoryArchive)]? = nil
+    ) -> ScanOutcome {
+        var all: [FileDigest] = []
+        var scannedRoots: [String] = []
+        var missingRoots: [String] = []
+        let available = pipelines ?? UsageSource.allCases.map { source in
+            (
+                core: ScanCore(
+                    source: source,
+                    root: ScanCore.defaultRoot(for: source),
+                    cacheURL: ScanCore.defaultCacheURL(for: source)
+                ),
+                archive: HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
+            )
+        }
+        for source in UsageSource.allCases where wanted.contains(source) {
+            guard let pipeline = available.first(where: { $0.core.source == source }) else { continue }
+            let core = pipeline.core
+            guard FileManager.default.fileExists(atPath: core.root.path) else {
+                // A source the user explicitly asked for must not be skipped quietly.
+                if explicitSource == source {
+                    return .failure(
+                        message: "no \(source.displayName) data at \(core.root.path)\n",
+                        code: 1
+                    )
+                }
+                missingRoots.append("no \(source.displayName) data at \(core.root.path)")
+                continue
+            }
+            scannedRoots.append(core.root.path)
+            let cache = core.loadCache()
+            let archive = pipeline.archive
+            let archiveCache = archive.load()
+            var seededDigests = cache.digests
+            var seededClaims = cache.claims
+            HistoryArchive.seed(archive: archiveCache, intoDigests: &seededDigests, claims: &seededClaims)
+            let result = core.refreshed(digests: seededDigests, claims: seededClaims)
+            if persist {
+                // A migrated cache is rewritten even when nothing else changed,
+                // so the upgrade converts once instead of on every invocation.
+                if result.changed || cache.wasMigrated {
+                    core.saveCache(digests: result.digests, claims: result.claims)
+                }
+                if let updated = HistoryArchive.updated(archiveCache, digests: result.digests, claims: result.claims) {
+                    archive.save(updated)
+                } else if archiveCache.wasMigrated {
+                    archive.save(archiveCache)
+                }
+            }
+            all += result.digests.values
+        }
+        guard !scannedRoots.isEmpty else {
+            return .failure(
+                message: "no session data found:\n  \(missingRoots.joined(separator: "\n  "))\n",
+                code: 1
+            )
+        }
+        if wanted.contains(.claude), includeHistory,
+           let history = StatsCacheImport.historyDigest(
+               transcriptDigests: all.filter { $0.source == .claude }
+           ) {
+            all.append(history)
+        }
+        return .success(digests: all, notes: missingRoots)
+    }
+
     static func run(arguments: [String]) -> Int32 {
         let json = arguments.contains("--json")
+        var all: [FileDigest] = []
 
         /// A flag present without a value is an error the caller must surface
         /// (silently ignoring it would print a report the user explicitly
@@ -50,52 +138,43 @@ enum CLIReport {
             }
         }
 
-        var all: [FileDigest] = []
-        var scannedRoots: [String] = []
-        var missingRoots: [String] = []
-        for source in UsageSource.allCases where wanted.contains(source) {
-            let core = ScanCore(
-                source: source,
-                root: ScanCore.defaultRoot(for: source),
-                cacheURL: ScanCore.defaultCacheURL(for: source)
+        // Dispatched before the one-shot scan below: --watch keeps its own
+        // incremental state, so scanning here first would do the whole job twice
+        // (and write the cache twice) before the first frame.
+        if arguments.contains("--watch") {
+            // --watch drives a human-readable live view; combining it with a
+            // machine format silently ignored the format and wrote ANSI escapes
+            // into what the caller expected to be parseable output.
+            if json || arguments.contains("--csv") {
+                FileHandle.standardError.write(Data(
+                    "--watch cannot be combined with --json or --csv (it redraws a human-readable view)\n".utf8
+                ))
+                return 2
+            }
+            return runWatch(
+                sources: wanted,
+                explicitSource: explicitSource,
+                includeHistory: !arguments.contains("--transcripts-only"),
+                range: range
             )
-            guard FileManager.default.fileExists(atPath: core.root.path) else {
-                // A source the user explicitly asked for must not be skipped quietly.
-                if explicitSource == source {
-                    FileHandle.standardError.write(Data("no \(source.displayName) data at \(core.root.path)\n".utf8))
-                    return 1
-                }
-                missingRoots.append("no \(source.displayName) data at \(core.root.path)")
-                continue
+        }
+
+        let scan = Self.scan(
+            sources: wanted,
+            explicitSource: explicitSource,
+            includeHistory: !arguments.contains("--transcripts-only")
+        )
+        switch scan {
+        case .failure(let message, let code):
+            FileHandle.standardError.write(Data(message.utf8))
+            return code
+        case .success(let digests, let notes):
+            // One root present, the other absent: report what's being skipped
+            // (stderr, so --json/--csv stdout stays clean).
+            for note in notes {
+                FileHandle.standardError.write(Data("note: \(note)\n".utf8))
             }
-            scannedRoots.append(core.root.path)
-            let cache = core.loadCache()
-            let archive = HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
-            let archiveCache = archive.load()
-            var seededDigests = cache.digests
-            var seededClaims = cache.claims
-            HistoryArchive.seed(archive: archiveCache, intoDigests: &seededDigests, claims: &seededClaims)
-            let result = core.refreshed(digests: seededDigests, claims: seededClaims)
-            if result.changed { core.saveCache(digests: result.digests, claims: result.claims) }
-            if let updated = HistoryArchive.updated(archiveCache, digests: result.digests, claims: result.claims) {
-                archive.save(updated)
-            }
-            all += result.digests.values
-        }
-        guard !scannedRoots.isEmpty else {
-            FileHandle.standardError.write(Data("no session data found:\n  \(missingRoots.joined(separator: "\n  "))\n".utf8))
-            return 1
-        }
-        // One root present, the other absent: report what's being skipped
-        // (stderr, so --json/--csv stdout stays clean).
-        for note in missingRoots {
-            FileHandle.standardError.write(Data("note: \(note)\n".utf8))
-        }
-        if wanted.contains(.claude), !arguments.contains("--transcripts-only"),
-           let history = StatsCacheImport.historyDigest(
-               transcriptDigests: all.filter { $0.source == .claude }
-           ) {
-            all.append(history)
+            all = digests
         }
 
         if arguments.contains("--csv") {
@@ -104,19 +183,234 @@ enum CLIReport {
         }
 
         if json {
-            let stats = StatsBuilder.build(digests: all, range: range ?? .all)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            if let data = try? encoder.encode(stats), let s = String(data: data, encoding: .utf8) {
-                print(s)
+            // Same plan and same encoder as the GUI export, so the two documents
+            // are genuinely interchangeable rather than only claimed to be.
+            let stats = StatsBuilder.build(digests: all, range: range ?? .all, plan: appPlan())
+            do {
+                print(try stats.jsonDocument())
                 return 0
+            } catch {
+                FileHandle.standardError.write(Data("could not encode stats: \(error)\n".utf8))
+                return 1
             }
-            return 1
         }
 
         printReport(digests: all, focus: range)
         return 0
+    }
+
+    /// The plan configured in the app.
+    ///
+    /// Read from the app's own preferences domain rather than
+    /// `UserDefaults.standard`: a bare CLI binary has no bundle identifier, so
+    /// `standard` would be a different domain and `--json` would report no plan
+    /// while the GUI reported one.
+    static func appPlan() -> UsagePlan {
+        guard let defaults = UserDefaults(suiteName: "com.clementmalige.tktracker") else {
+            return .none
+        }
+        return UsagePlan.load(from: defaults)
+    }
+
+    /// One-bit flag shared between a signal handler and the watch loop.
+    private final class InterruptFlag: @unchecked Sendable {
+        private var value = false
+        private let lock = NSLock()
+        var isSet: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+        func set() {
+            lock.lock(); defer { lock.unlock() }
+            value = true
+        }
+    }
+
+    /// Live terminal view: redraw the report every few seconds until interrupted.
+    ///
+    /// Uses the alternate screen buffer so the scrollback the user had before
+    /// running it survives, and hides the cursor while drawing. Both must be
+    /// undone on the way out — leaving someone's terminal with a hidden cursor is
+    /// a genuinely rude thing to do.
+    ///
+    /// Signal handling is deliberately not on the main queue. `Main.main()` runs
+    /// the CLI directly on the main thread with no run loop and no
+    /// `dispatchMain()`, and this loop then blocks that thread — so a signal
+    /// source scheduled on `.main` would never be drained and its handler would
+    /// never run, while `signal(SIGINT, SIG_IGN)` had already disabled the
+    /// default behaviour. The net effect was a process that ignored ctrl-C
+    /// outright and, when finally killed, left the terminal in the alternate
+    /// buffer with no cursor: exactly what this is supposed to prevent.
+    ///
+    /// So: the sources live on their own queue, they only set a flag, and the
+    /// loop returns normally through `defer` so cleanup happens on one path.
+    private static func runWatch(
+        sources: Set<UsageSource>,
+        explicitSource: UsageSource?,
+        includeHistory: Bool,
+        range: StatsRange?
+    ) -> Int32 {
+        // Only drive the terminal when there is one. Piping `--watch` into a file
+        // or another process should produce plain frames, not ANSI escapes.
+        let isTerminal = isatty(STDOUT_FILENO) == 1
+        let enterAlternate = isTerminal ? "\u{1B}[?1049h\u{1B}[?25l" : ""
+        let leaveAlternate = isTerminal ? "\u{1B}[?25h\u{1B}[?1049l" : ""
+        let home = isTerminal ? "\u{1B}[H\u{1B}[2J" : "\n"
+
+        /// Escapes must go through the same buffered stream as `print`, or they
+        /// arrive out of order — stdout is block-buffered when it is not a TTY,
+        /// so direct `FileHandle` writes overtook the frame they were meant to
+        /// follow and the restore sequence landed before the last report.
+        func emit(_ text: String) {
+            guard !text.isEmpty else { return }
+            print(text, terminator: "")
+            fflush(stdout)
+        }
+
+        let interrupted = InterruptFlag()
+        let signalQueue = DispatchQueue(label: "tktracker.watch.signals")
+        var signalSources: [DispatchSourceSignal] = []
+        for sig in [SIGINT, SIGTERM] {
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: signalQueue)
+            source.setEventHandler { interrupted.set() }
+            source.resume()
+            signalSources.append(source)
+            // Only now that a source is actually delivering can the default
+            // disposition be suppressed.
+            signal(sig, SIG_IGN)
+        }
+        defer {
+            for source in signalSources { source.cancel() }
+            signal(SIGINT, SIG_DFL)
+            signal(SIGTERM, SIG_DFL)
+        }
+
+        emit(enterAlternate)
+        defer { emit(leaveAlternate) }
+
+        // Carry scan state across ticks. Re-reading and re-writing a multi-MB
+        // cache every 3 seconds — which a stateless `Self.scan` per tick would
+        // do, for as long as the user leaves this open — is not acceptable for a
+        // read-only view.
+        var live = WatchState(sources: sources, explicitSource: explicitSource, includeHistory: includeHistory)
+
+        while !interrupted.isSet {
+            emit(home)
+            switch live.tick() {
+            case .failure(let message, let code):
+                FileHandle.standardError.write(Data(message.utf8))
+                return code
+            case .success(let digests, _):
+                printReport(digests: digests, focus: range)
+                print("  watching — ctrl-c to stop")
+            }
+            // Sleep in slices so ctrl-C feels immediate rather than taking up to
+            // a full interval to be noticed.
+            let deadline = Date().addingTimeInterval(3)
+            while !interrupted.isSet, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+        return 0
+    }
+
+    /// Incremental scan state for `--watch`.
+    ///
+    /// Holds digests and claims in memory between ticks and only persists on a
+    /// throttle, mirroring what `UsageEngine` does for the app instead of
+    /// re-reading and rewriting the whole cache every few seconds.
+    private struct WatchState {
+        let sources: Set<UsageSource>
+        let explicitSource: UsageSource?
+        let includeHistory: Bool
+
+        private var pipelines: [(core: ScanCore, archive: HistoryArchive)] = []
+        private var digests: [UsageSource: [String: FileDigest]] = [:]
+        private var claims: [UsageSource: ClaimMap] = [:]
+        private var archives: [UsageSource: DigestCache] = [:]
+        private var lastSave = Date()
+        private var started = false
+
+        init(sources: Set<UsageSource>, explicitSource: UsageSource?, includeHistory: Bool) {
+            self.sources = sources
+            self.explicitSource = explicitSource
+            self.includeHistory = includeHistory
+        }
+
+        mutating func tick() -> ScanOutcome {
+            if !started {
+                started = true
+                for source in UsageSource.allCases where sources.contains(source) {
+                    let core = ScanCore(
+                        source: source,
+                        root: ScanCore.defaultRoot(for: source),
+                        cacheURL: ScanCore.defaultCacheURL(for: source)
+                    )
+                    let archive = HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
+                    guard FileManager.default.fileExists(atPath: core.root.path) else {
+                        if explicitSource == source {
+                            return .failure(
+                                message: "no \(source.displayName) data at \(core.root.path)\n",
+                                code: 1
+                            )
+                        }
+                        continue
+                    }
+                    let cache = core.loadCache()
+                    let archiveCache = archive.load()
+                    var seeded = cache.digests
+                    var seededClaims = cache.claims
+                    HistoryArchive.seed(archive: archiveCache, intoDigests: &seeded, claims: &seededClaims)
+                    pipelines.append((core, archive))
+                    digests[source] = seeded
+                    claims[source] = seededClaims
+                    archives[source] = archiveCache
+                }
+                guard !pipelines.isEmpty else {
+                    return .failure(message: "no session data found\n", code: 1)
+                }
+            }
+
+            var all: [FileDigest] = []
+            var dirty = false
+            for pipeline in pipelines {
+                let source = pipeline.core.source
+                let result = pipeline.core.refreshed(
+                    digests: digests[source] ?? [:],
+                    claims: claims[source] ?? ClaimMap()
+                )
+                digests[source] = result.digests
+                claims[source] = result.claims
+                if result.changed { dirty = true }
+                if let archive = archives[source],
+                   let updated = HistoryArchive.updated(archive, digests: result.digests, claims: result.claims) {
+                    archives[source] = updated
+                    pipeline.archive.save(updated)
+                }
+                all += result.digests.values
+            }
+
+            // Same 15s throttle the app uses, so a long-running watch does not
+            // rewrite megabytes on every tick.
+            if dirty, Date().timeIntervalSince(lastSave) > 15 {
+                for pipeline in pipelines {
+                    let source = pipeline.core.source
+                    pipeline.core.saveCache(
+                        digests: digests[source] ?? [:],
+                        claims: claims[source] ?? ClaimMap()
+                    )
+                }
+                lastSave = Date()
+            }
+
+            if sources.contains(.claude), includeHistory,
+               let history = StatsCacheImport.historyDigest(
+                   transcriptDigests: all.filter { $0.source == .claude }
+               ) {
+                all.append(history)
+            }
+            return .success(digests: all, notes: [])
+        }
     }
 
     private static func printReport(digests: [FileDigest], focus: StatsRange?) {

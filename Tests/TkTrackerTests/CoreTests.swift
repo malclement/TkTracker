@@ -202,6 +202,282 @@ final class CoreTests {
         #expect(seeded.claims["m1:r1"] == original.path)
     }
 
+    // MARK: claim map & cache migration
+
+    @Test func claimMapInternsOwnersLosslessly() {
+        var map = ClaimMap()
+        let a = "/Users/x/.claude/projects/-Users-x-proj/aaaa.jsonl"
+        let b = "/Users/x/.claude/projects/-Users-x-proj/bbbb.jsonl"
+        var allFresh = true
+        for i in 0..<500 where !map.claim("m\(i):r\(i)", owner: i.isMultiple(of: 2) ? a : b) {
+            allFresh = false
+        }
+        #expect(allFresh)
+
+        #expect(map.count == 500)
+        // 500 claims, two owners: the whole point of interning.
+        #expect(map.paths.count == 2)
+        #expect(map["m0:r0"] == a)
+        #expect(map["m1:r1"] == b)
+        #expect(map["absent"] == nil)
+
+        // Re-parse by the owner is allowed; a different file is refused.
+        let reparse = map.claim("m0:r0", owner: a)
+        let stolen = map.claim("m0:r0", owner: b)
+        #expect(reparse)
+        #expect(!stolen)
+        #expect(map["m0:r0"] == a)
+    }
+
+    @Test func v2CacheMigratesWithoutLosingClaims() throws {
+        // Exactly the pre-1.5 on-disk shape: claims as key -> full owner path.
+        let legacy = #"""
+        {"version":2,
+         "digests":{"/a.jsonl":{"path":"/a.jsonl","size":1,"mtime":1,"offset":1,"sessionId":"s","projectDir":"p","lastContextTokens":0,"missing":true,"buckets":[],"recentKeys":[]}},
+         "claims":{"m1:r1":"/a.jsonl","m2:r2":"/a.jsonl","m3:r3":"/b.jsonl"}}
+        """#
+        let cache = try JSONDecoder().decode(DigestCache.self, from: Data(legacy.utf8))
+
+        #expect(cache.version == 2)
+        #expect(cache.claims.count == 3)
+        #expect(cache.claims["m1:r1"] == "/a.jsonl")
+        #expect(cache.claims["m2:r2"] == "/a.jsonl")
+        #expect(cache.claims["m3:r3"] == "/b.jsonl")
+        #expect(cache.claims.paths.count == 2) // interned on the way in
+
+        // Re-encoding emits v3, and a v3 read is identical to the v2 read.
+        var upgraded = cache
+        upgraded.version = ScanCore.cacheVersion
+        let data = try JSONEncoder().encode(upgraded)
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.contains("claimPaths"))
+        #expect(!text.contains("\"claims\""))
+
+        let roundTripped = try JSONDecoder().decode(DigestCache.self, from: data)
+        #expect(roundTripped.claims == cache.claims)
+        #expect(roundTripped.digests["/a.jsonl"]?.missing == true)
+    }
+
+    @Test func loadCacheMigratesV2AndFlagsIt() throws {
+        let cacheURL = dir.appendingPathComponent("legacy-cache.json")
+        let legacy = #"{"version":2,"claims":{"m1:r1":"/a.jsonl"},"digests":{}}"#
+        try Data(legacy.utf8).write(to: cacheURL)
+
+        let core = ScanCore(root: dir, cacheURL: cacheURL)
+        let loaded = core.loadCache()
+        #expect(loaded.wasMigrated)
+        #expect(loaded.version == ScanCore.cacheVersion)
+        #expect(loaded.claims["m1:r1"] == "/a.jsonl")
+
+        // A version from the future is refused rather than half-read.
+        try Data(#"{"version":99,"claimPaths":[],"claimOwners":{},"digests":{}}"#.utf8).write(to: cacheURL)
+        #expect(core.loadCache().claims.isEmpty)
+    }
+
+    @Test func historyArchiveMigratesV2RatherThanDiscardingIt() throws {
+        // The archive is the only copy of pruned sessions' exact usage. A format
+        // bump must migrate it — discarding would silently downgrade real spend
+        // to the stats-cache estimate.
+        let url = dir.appendingPathComponent("legacy-archive.json")
+        let legacy = #"""
+        {"version":2,
+         "digests":{"/gone.jsonl":{"path":"/gone.jsonl","size":1,"mtime":1,"offset":1,"sessionId":"s","projectDir":"p","lastContextTokens":0,"missing":true,"buckets":[{"hour":1780000000,"model":"claude-opus-4-8","totals":{"input":100,"output":50,"cacheRead":0,"cacheWrite5m":0,"cacheWrite1h":0,"messages":1,"webSearches":0}}],"recentKeys":[]}},
+         "claims":{"m1:r1":"/gone.jsonl"}}
+        """#
+        try Data(legacy.utf8).write(to: url)
+
+        let archive = HistoryArchive(url: url)
+        let loaded = archive.load()
+        // v2 is the archive's native shape, so this is a plain read, not a
+        // migration — and above all it is not a discard.
+        #expect(!loaded.wasMigrated)
+        #expect(loaded.version == HistoryArchive.writeVersion)
+        #expect(loaded.digests["/gone.jsonl"]?.totals.input == 100)
+        #expect(loaded.claims["m1:r1"] == "/gone.jsonl")
+
+        // And it still blocks a resume from re-counting the message.
+        var digests: [String: FileDigest] = [:]
+        var claims = ClaimMap()
+        HistoryArchive.seed(archive: loaded, intoDigests: &digests, claims: &claims)
+        #expect(claims["m1:r1"] == "/gone.jsonl")
+        #expect(digests["/gone.jsonl"]?.missing == true)
+
+        // A v3 archive — as an interim build would have written — is read and
+        // normalized back to v2 rather than being thrown away.
+        let v3URL = dir.appendingPathComponent("v3-archive.json")
+        var v3 = DigestCache(
+            version: 3,
+            digests: loaded.digests,
+            claims: ["m1:r1": "/gone.jsonl"]
+        )
+        v3.version = 3
+        try JSONEncoder().encode(v3).write(to: v3URL)
+        let normalized = HistoryArchive(url: v3URL).load()
+        #expect(normalized.wasMigrated)
+        #expect(normalized.version == HistoryArchive.writeVersion)
+        #expect(normalized.claims["m1:r1"] == "/gone.jsonl")
+        #expect(normalized.digests["/gone.jsonl"]?.totals.input == 100)
+    }
+
+    @Test func archiveStaysReadableByOlderBuilds() throws {
+        // The archive is the only copy of usage for transcripts the vendor has
+        // deleted, and an older TkTracker discards a format it cannot parse. So
+        // it must keep writing the v2 shape even though scan caches moved to v3
+        // — a downgrade, or a 1.4 instance still running, would otherwise
+        // silently destroy history that cannot be rebuilt from disk.
+        let url = dir.appendingPathComponent("compat-archive.json")
+        let archive = HistoryArchive(url: url)
+
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        pruned.buckets = [HourBucket(
+            hour: 1_780_000_000 / 3600 * 3600,
+            model: "claude-opus-4-8",
+            totals: TokenTotals(input: 100, output: 50, messages: 1)
+        )]
+        let cache = try #require(HistoryArchive.updated(
+            DigestCache(version: HistoryArchive.writeVersion, digests: [:], claims: ClaimMap()),
+            digests: ["/gone.jsonl": pruned],
+            claims: ["m1:r1": "/gone.jsonl"]
+        ))
+        archive.save(cache)
+
+        // On disk it is v2, with the path-valued claim dictionary a 1.4 build
+        // knows how to read — not the interned v3 shape.
+        let raw = try JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as? [String: Any]
+        #expect(raw?["version"] as? Int == 2)
+        #expect(raw?["claimPaths"] == nil)
+        let legacyClaims = try #require(raw?["claims"] as? [String: String])
+        #expect(legacyClaims["m1:r1"] == "/gone.jsonl")
+
+        // And this build still round-trips it.
+        let reloaded = archive.load()
+        #expect(reloaded.claims["m1:r1"] == "/gone.jsonl")
+        #expect(reloaded.digests["/gone.jsonl"]?.totals.input == 100)
+
+        // Scan caches, being disposable, do take the interned shape.
+        let core = ScanCore(root: dir, cacheURL: dir.appendingPathComponent("compat-cache.json"))
+        core.saveCache(digests: [:], claims: ["m1:r1": "/gone.jsonl"])
+        let cacheRaw = try JSONSerialization.jsonObject(
+            with: try Data(contentsOf: dir.appendingPathComponent("compat-cache.json"))
+        ) as? [String: Any]
+        #expect(cacheRaw?["version"] as? Int == 3)
+        #expect(cacheRaw?["claimPaths"] != nil)
+        #expect(cacheRaw?["claims"] == nil)
+    }
+
+    @Test func archiveFromTheFutureIsNeverOverwritten() throws {
+        // Declining to read used to be worse than reading badly: `load()`
+        // returned an empty archive and the caller then folded fresh state into
+        // it and saved straight back over the file it had just refused —
+        // destroying exact spend for sessions whose transcripts are gone.
+        let url = dir.appendingPathComponent("future-archive.json")
+        let future = #"{"version":99,"claimPaths":["/x.jsonl"],"claimOwners":{"m1:r1":0},"digests":{}}"#
+        try Data(future.utf8).write(to: url)
+        let before = try Data(contentsOf: url)
+
+        let archive = HistoryArchive(url: url)
+        let loaded = archive.load()
+        #expect(loaded.digests.isEmpty)
+        #expect(loaded.isUnwritable)
+
+        // updated() must decline outright, so no save is even attempted.
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        #expect(HistoryArchive.updated(loaded, digests: ["/gone.jsonl": pruned], claims: ClaimMap()) == nil)
+
+        // And a direct save is refused rather than clobbering the file.
+        #expect(!archive.save(loaded))
+        #expect(try Data(contentsOf: url) == before, "the newer archive must be byte-identical")
+    }
+
+    @Test func corruptArchiveIsQuarantinedNotDestroyed() throws {
+        // A corrupt archive still holds the only record of pruned sessions, so it
+        // is moved aside (a later build may salvage it) rather than overwritten —
+        // while still letting the app start a fresh archive.
+        let url = dir.appendingPathComponent("corrupt-archive.json")
+        try Data("{ this is not json".utf8).write(to: url)
+
+        let archive = HistoryArchive(url: url)
+        let loaded = archive.load()
+        #expect(loaded.digests.isEmpty)
+        #expect(!loaded.isUnwritable, "after quarantine the app may write a fresh archive")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+
+        // The original bytes survive under a sibling name.
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let quarantined = siblings.filter { $0.hasPrefix("corrupt-archive.json.unreadable-") }
+        #expect(quarantined.count == 1)
+        let recovered = try String(
+            contentsOf: dir.appendingPathComponent(quarantined[0]), encoding: .utf8
+        )
+        #expect(recovered == "{ this is not json")
+
+        // A fresh archive can now be written.
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        let fresh = try #require(HistoryArchive.updated(
+            loaded, digests: ["/gone.jsonl": pruned], claims: ["m1:r1": "/gone.jsonl"]
+        ))
+        #expect(archive.save(fresh))
+        #expect(archive.load().claims["m1:r1"] == "/gone.jsonl")
+    }
+
+    @Test func archiveHarvestsClaimsWhenAnArchivedDigestChanges() throws {
+        // Claims used to be harvested only on first insert, so an
+        // already-archived digest that later gained buckets contributed none —
+        // reopening double counting after a reset.
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        pruned.buckets = [HourBucket(
+            hour: 1_780_000_000 / 3600 * 3600,
+            model: "claude-opus-4-8",
+            totals: TokenTotals(input: 100, messages: 1)
+        )]
+
+        let first = try #require(HistoryArchive.updated(
+            DigestCache(version: HistoryArchive.writeVersion, digests: [:], claims: ClaimMap()),
+            digests: ["/gone.jsonl": pruned],
+            claims: ["m1:r1": "/gone.jsonl"]
+        ))
+        #expect(first.claims["m1:r1"] == "/gone.jsonl")
+
+        // The same session reappears, is re-parsed with a second message, and is
+        // pruned again. Its new claim must be archived too.
+        var grown = pruned
+        grown.buckets.append(HourBucket(
+            hour: 1_780_003_600 / 3600 * 3600,
+            model: "claude-opus-4-8",
+            totals: TokenTotals(input: 50, messages: 1)
+        ))
+        let second = try #require(HistoryArchive.updated(
+            first,
+            digests: ["/gone.jsonl": grown],
+            claims: ["m1:r1": "/gone.jsonl", "m2:r2": "/gone.jsonl"]
+        ))
+        #expect(second.claims["m2:r2"] == "/gone.jsonl")
+        #expect(second.digests["/gone.jsonl"]?.buckets.count == 2)
+    }
+
+    @Test func archiveFoldsClaimsOnlyForNewlyPrunedSessions() throws {
+        // The steady-state refresh must not walk the whole claim table.
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        let claims: ClaimMap = ["m1:r1": "/gone.jsonl", "m2:r2": "/live.jsonl"]
+
+        let first = HistoryArchive.updated(
+            DigestCache(version: ScanCore.cacheVersion, digests: [:], claims: ClaimMap()),
+            digests: ["/gone.jsonl": pruned],
+            claims: claims
+        )
+        let archived = try #require(first)
+        #expect(archived.claims["m1:r1"] == "/gone.jsonl")
+        #expect(archived.claims["m2:r2"] == nil) // owner still live — not archived
+
+        // Nothing new pruned: no rewrite, so no claim-table walk and no disk write.
+        #expect(HistoryArchive.updated(archived, digests: ["/gone.jsonl": pruned], claims: claims) == nil)
+    }
+
     // MARK: history archive
 
     @Test func historyArchiveSurvivesPruneAndReset() throws {
@@ -232,7 +508,7 @@ final class CoreTests {
 
         // "Rescan everything": the scan cache is gone, the archive seeds it back.
         var digests: [String: FileDigest] = [:]
-        var claims: [String: String] = [:]
+        var claims = ClaimMap()
         HistoryArchive.seed(archive: archive.load(), intoDigests: &digests, claims: &claims)
         let rescanned = core.refreshed(digests: digests, claims: claims)
         let restored = try #require(rescanned.digests[file.path])
@@ -271,7 +547,7 @@ final class CoreTests {
             .write(to: resumed, atomically: true, encoding: .utf8)
 
         var digests: [String: FileDigest] = [:]
-        var claims: [String: String] = [:]
+        var claims = ClaimMap()
         HistoryArchive.seed(archive: archived, intoDigests: &digests, claims: &claims)
         let core = ScanCore(root: root, cacheURL: dir.appendingPathComponent("cache.json"))
         let result = core.refreshed(digests: digests, claims: claims)
@@ -296,7 +572,7 @@ final class CoreTests {
         var liveDigest = FileDigest(path: "/a.jsonl", sessionId: "a", projectDir: "p")
         liveDigest.aiTitle = "fresh"
         var digests = ["/a.jsonl": liveDigest]
-        var claims = ["m1:r1": "/elsewhere.jsonl"]
+        var claims: ClaimMap = ["m1:r1": "/elsewhere.jsonl"]
         HistoryArchive.seed(archive: archive, intoDigests: &digests, claims: &claims)
 
         #expect(digests["/a.jsonl"]?.aiTitle == "fresh")
@@ -408,6 +684,28 @@ final class CoreTests {
         let sameBlock = try #require(StatsBuilder.currentBlock(hourAll: agg([0, 4]), nowEpoch: 4.5 * 3600))
         #expect(sameBlock.start.timeIntervalSince1970 == 0)
         #expect(sameBlock.totals.messages == 2)
+
+        // A gap of exactly one block length resets the chain, so ancient history
+        // cannot move the current block — this is what lets the walk-back skip it.
+        let afterGap = try #require(StatsBuilder.currentBlock(
+            hourAll: agg([0, 1, 2, 3, 4, 100, 101]), nowEpoch: 102 * 3600
+        ))
+        #expect(afterGap.start.timeIntervalSince1970 == 100 * 3600)
+        #expect(afterGap.totals.messages == 2)
+
+        // Long unbroken run: hours 0...20 with no 5h gap chains 0 -> 5 -> 10 -> 15 -> 20.
+        let chained = try #require(StatsBuilder.currentBlock(
+            hourAll: agg(Array(0...20)), nowEpoch: 21 * 3600
+        ))
+        #expect(chained.start.timeIntervalSince1970 == 20 * 3600)
+        #expect(chained.totals.messages == 1)
+
+        // Sparse-but-unbroken: 4h steps never reset, so the chain still advances.
+        let sparse = try #require(StatsBuilder.currentBlock(
+            hourAll: agg([0, 4, 8, 12]), nowEpoch: 13 * 3600
+        ))
+        #expect(sparse.start.timeIntervalSince1970 == 8 * 3600)
+        #expect(sparse.totals.messages == 2) // hours 8 and 12
     }
 
     // MARK: model palette

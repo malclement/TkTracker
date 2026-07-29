@@ -83,13 +83,28 @@ struct StatTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card(padding: 14)
+        // Read as one statement rather than four unrelated fragments.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        var parts = [value]
+        if let delta {
+            parts.append("\(Format.signedPercent(delta)) \(deltaLabel)")
+        } else if let sub {
+            parts.append(sub)
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
-/// Horizontal share-of-total bar used in table rows.
+/// Horizontal proportion bar — table share columns, plan allowance gauges.
 struct ShareBar: View {
     let fraction: Double
     var color: Color = Theme.accent
+    var height: CGFloat = 5
 
     var body: some View {
         GeometryReader { geo in
@@ -97,10 +112,12 @@ struct ShareBar: View {
                 Capsule().fill(Theme.track)
                 Capsule()
                     .fill(Theme.gaugeFill(color))
-                    .frame(width: max(2, geo.size.width * fraction))
+                    .frame(width: max(2, geo.size.width * min(1, max(0, fraction))))
             }
         }
-        .frame(height: 5)
+        .frame(height: height)
+        // The adjacent percentage carries the number; the bar is decoration.
+        .accessibilityHidden(true)
     }
 }
 
@@ -121,9 +138,14 @@ struct ContextGauge: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context window")
+        .accessibilityValue("\(Format.percent(fraction)) full")
     }
 }
 
+/// Color key beside a model name. Purely a repeat of the adjacent label —
+/// identity is never carried by color alone, so it is hidden from VoiceOver.
 struct Swatch: View {
     let color: Color
 
@@ -131,6 +153,7 @@ struct Swatch: View {
         RoundedRectangle(cornerRadius: 2.5, style: .continuous)
             .fill(color)
             .frame(width: 9, height: 9)
+            .accessibilityHidden(true)
     }
 }
 

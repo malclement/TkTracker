@@ -34,43 +34,13 @@ struct ModelPricing: Sendable, Equatable {
 
 enum Pricing {
     /// Web search billed per request, on top of tokens.
-    static let webSearchPer1000: Double = 10.0
+    static var webSearchPer1000: Double { PricingCatalog.shared.webSearchPer1000 }
 
-    /// Substring-matched so bare ids, dated ids and bedrock/vertex-style ids all resolve.
-    /// Order matters: most specific first.
+    /// Substring-matched so bare ids, dated ids and bedrock/vertex-style ids all
+    /// resolve; rules are ordered most-specific-first. The table itself lives in
+    /// `pricing.json` — see `PricingCatalog`.
     static func pricing(for model: String) -> ModelPricing? {
-        let m = model.lowercased()
-        if m.isEmpty || m.contains("synthetic") { return nil }
-        // OpenAI (Codex sessions) — list prices per MTok, standard tier.
-        // gpt-5.4/5.5 long-context premiums are not modeled (like [1m] Sonnet,
-        // sessions run the standard window unless the prompt exceeds it).
-        if m.contains("gpt") || m.contains("codex") {
-            if m.contains("codex-mini-latest") { return .openAI(input: 1.5, output: 6) } // pre-GPT-5 codex
-            if m.contains("codex-mini") { return .openAI(input: 0.25, output: 2) } // gpt-5.1-codex-mini
-            if m.contains("gpt-5.5") { return .openAI(input: 5, output: 30) }
-            if m.contains("gpt-5.4-mini") { return .openAI(input: 0.75, output: 4.5) }
-            if m.contains("gpt-5.4-nano") { return .openAI(input: 0.20, output: 1.25) }
-            if m.contains("gpt-5.4") { return .openAI(input: 2.5, output: 15) }
-            if m.contains("gpt-5.3") { return .openAI(input: 1.75, output: 14) } // gpt-5.3-codex
-            if m.contains("gpt-5.2") { return .openAI(input: 0.875, output: 7) }
-            if m.contains("gpt-5"), m.contains("mini") { return .openAI(input: 0.25, output: 2) } // gpt-5-mini / 5.1-mini
-            if m.contains("gpt-5"), m.contains("nano") { return .openAI(input: 0.05, output: 0.40) }
-            if m.contains("gpt-5") { return .openAI(input: 1.25, output: 10) } // gpt-5 / 5.1 (+codex, max)
-            return nil // unknown generations surface as "no pricing", never a guess
-        }
-        if m.contains("fable") || m.contains("mythos") { return ModelPricing(input: 10, output: 50) }
-        if m.contains("opus-4-5") || m.contains("opus-4-6") || m.contains("opus-4-7") || m.contains("opus-4-8") {
-            return ModelPricing(input: 5, output: 25)
-        }
-        if m.contains("opus") { return ModelPricing(input: 15, output: 75) } // opus 4.1 and older
-        // Sonnet 5 sticker price; intro pricing ($2/$10 through 2026-08-31) makes this a slight overestimate.
-        if m.contains("sonnet") { return ModelPricing(input: 3, output: 15) }
-        if m.contains("haiku-4") { return ModelPricing(input: 1, output: 5) }
-        if m.contains("3-5-haiku") || m.contains("haiku-3-5") { return ModelPricing(input: 0.8, output: 4) }
-        if m.contains("haiku") { return ModelPricing(input: 0.25, output: 1.25) }
-        if m == "claude-2" || m.contains("claude-2.") { return ModelPricing(input: 8, output: 24) }
-        if m.contains("instant") { return ModelPricing(input: 0.8, output: 2.4) }
-        return nil
+        PricingCatalog.shared.pricing(for: model)
     }
 
     static func cost(model: String, totals: TokenTotals) -> Double {
@@ -105,10 +75,7 @@ enum Pricing {
     /// GPT-5-family models run a ~272K input window; everything else the
     /// standard 200K.
     static func contextWindow(for model: String) -> Int64 {
-        let m = model.lowercased()
-        if m.contains("[1m]") { return 1_000_000 }
-        if m.contains("gpt") || m.contains("codex") { return 272_000 }
-        return 200_000
+        PricingCatalog.shared.contextWindow(for: model)
     }
 }
 
