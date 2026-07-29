@@ -9,6 +9,8 @@ enum Main {
             exit(CLIReport.run(arguments: Array(args.dropFirst())))
         case "--version", "-v", "version":
             print("TkTracker \(AppVersion.current)")
+        case "--selfcheck":
+            exit(SelfCheck.run())
         case "--help", "-h", "help":
             print("""
             TkTracker — Claude Code & Codex token & cost tracker for macOS

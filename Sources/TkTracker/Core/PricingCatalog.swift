@@ -30,6 +30,11 @@ struct PricingDocument: Codable, Sendable {
     static let currentSchema = 1
 }
 
+/// Anchor for `Bundle(for:)`, so resource lookup can be relative to this
+/// module's own code rather than to `Bundle.main` (which is the test runner
+/// under `swift test`).
+private final class BundleAnchor {}
+
 /// A user-supplied correction for one model, keyed by its short display name
 /// ("Opus 4.8") so it covers every dated id that resolves to that name.
 struct PricingOverride: Codable, Sendable, Equatable {
@@ -49,7 +54,37 @@ struct PricingOverride: Codable, Sendable, Equatable {
 /// Users can override any model's rate (Settings → Pricing) to correct a stale
 /// figure or to reflect negotiated rates without waiting for a release.
 final class PricingCatalog: @unchecked Sendable {
-    static let shared = PricingCatalog()
+    /// The process-wide catalog every cost calculation resolves through.
+    ///
+    /// Under test it is built with **no overrides**. Otherwise every money
+    /// assertion in the suite — including the golden corpus whose entire point is
+    /// being hand-derived and reproducible — would read whatever overrides happen
+    /// to be sitting in the developer's Application Support directory, and would
+    /// pass or fail depending on ambient machine state. Tests that want to
+    /// exercise overrides construct their own instance with an injected path.
+    static let shared = PricingCatalog(overrides: isRunningTests ? [:] : nil)
+
+    /// True when hosted by a test runner.
+    ///
+    /// Several signals because no single one covers every host: XCTest exposes a
+    /// class and an env var, while `swift test` with swift-testing on a
+    /// Command-Line-Tools toolchain exposes neither — it runs under
+    /// `swiftpm-testing-helper` with an empty environment. `FormatAndResourceTests`
+    /// asserts this returns true, so if a future toolchain slips past every
+    /// check the suite fails loudly instead of silently reading ambient state.
+    /// `TKTRACKER_NO_PRICING_OVERRIDES` is the explicit escape hatch.
+    static var isRunningTests: Bool {
+        let info = ProcessInfo.processInfo
+        if info.environment["TKTRACKER_NO_PRICING_OVERRIDES"] != nil { return true }
+        if info.environment["XCTestConfigurationFilePath"] != nil { return true }
+        if NSClassFromString("XCTestCase") != nil { return true }
+        let host = info.processName
+        if host == "swiftpm-testing-helper" || host == "xctest" || host.hasSuffix("PackageTests") {
+            return true
+        }
+        if info.arguments.contains(where: { $0.hasSuffix(".xctest") }) { return true }
+        return Bundle.allBundles.contains { $0.bundleURL.pathExtension == "xctest" }
+    }
 
     private let lock = NSLock()
     private var document: PricingDocument
@@ -99,16 +134,24 @@ final class PricingCatalog: @unchecked Sendable {
         guard !id.isEmpty else { return nil }
 
         let vendor = Self.vendor(for: id)
+
+        // Find the matching rule first. A `skip: true` rule is a deliberate
+        // "never guess a price for this" — synthetic models, unknown vendor
+        // generations — and an override must not be able to turn one into a
+        // cost. Otherwise overriding "Synthetic" would start billing for
+        // Claude Code's internal placeholder turns.
+        var matched: PricingRule?
+        for rule in document.rules where rule.match.allSatisfy({ id.contains($0) }) {
+            matched = rule
+            break
+        }
+        if matched?.skip == true { return nil }
+
         if let override = overrides[ModelFamily.shortName(for: model)] {
             return Self.makePricing(input: override.input, output: override.output, vendor: vendor)
         }
-
-        for rule in document.rules where rule.match.allSatisfy({ id.contains($0) }) {
-            if rule.skip == true { return nil }
-            guard let input = rule.input, let output = rule.output else { return nil }
-            return Self.makePricing(input: input, output: output, vendor: rule.vendor ?? vendor)
-        }
-        return nil
+        guard let rule = matched, let input = rule.input, let output = rule.output else { return nil }
+        return Self.makePricing(input: input, output: output, vendor: rule.vendor ?? vendor)
     }
 
     var webSearchPer1000: Double {
@@ -204,8 +247,53 @@ final class PricingCatalog: @unchecked Sendable {
 
     // MARK: - Loading
 
+    /// Locates a resource in the SwiftPM resource bundle **without** `Bundle.module`.
+    ///
+    /// `Bundle.module` cannot be used here. SwiftPM's generated accessor calls
+    /// `Swift.fatalError` when it cannot find the bundle, so it never returns
+    /// nil and the documented "fall back to the compiled-in table" path was
+    /// unreachable — the app would trap instead. It also looks for the bundle at
+    /// `Bundle.main.bundleURL/TkTracker_TkTracker.bundle`, which inside a `.app`
+    /// is the app *root*, whereas the conventional location (and the one
+    /// `make app` uses) is `Contents/Resources`. Both defects were invisible on
+    /// the build machine because the generated accessor also carries a hardcoded
+    /// absolute `.build` path, which exists only there.
+    ///
+    /// So: probe the plausible locations, and return nil rather than trapping.
+    static func resourceURL(named name: String, extension ext: String) -> URL? {
+        let bundleName = "TkTracker_TkTracker.bundle"
+        var roots: [URL] = []
+        // Inside a .app: Contents/Resources.
+        if let resources = Bundle.main.resourceURL { roots.append(resources) }
+        // Beside the executable: `swift run`, a bare binary.
+        if let executableDir = Bundle.main.executableURL?.deletingLastPathComponent() {
+            roots.append(executableDir)
+        }
+        // The bundle root itself, which is what Bundle.module would have used.
+        roots.append(Bundle.main.bundleURL)
+        // Anchored on this module's own code rather than on Bundle.main. Under
+        // `swift test` Bundle.main is the test runner, so none of the above find
+        // the executable target's resource bundle — but the bundle carrying this
+        // class sits next to it in .build.
+        let anchor = Bundle(for: BundleAnchor.self).bundleURL
+        roots.append(anchor)
+        roots.append(anchor.deletingLastPathComponent())
+
+        for root in roots {
+            let candidate = root.appendingPathComponent(bundleName)
+            if let bundle = Bundle(url: candidate),
+               let url = bundle.url(forResource: name, withExtension: ext) {
+                return url
+            }
+        }
+        // Resources flattened straight into the main bundle.
+        return Bundle.main.url(forResource: name, withExtension: ext)
+    }
+
     private static func loadBundled() -> PricingDocument? {
-        guard let url = Bundle.module.url(forResource: "pricing", withExtension: "json") else { return nil }
+        guard let url = resourceURL(named: "pricing", extension: "json") else {
+            return nil
+        }
         do {
             let document = try JSONDecoder().decode(PricingDocument.self, from: Data(contentsOf: url))
             guard document.schema == PricingDocument.currentSchema else {

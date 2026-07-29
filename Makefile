@@ -19,7 +19,7 @@ APPLE_ID ?=
 TEAM_ID ?=
 APP_PASSWORD ?=
 
-.PHONY: build test release app install run clean icon zip notarize verify-signature help
+.PHONY: build test release app install run clean icon zip notarize verify-signature verify-signature-strict verify-resources help
 
 help:
 	@echo "TkTracker $(VERSION)"
@@ -72,6 +72,7 @@ app: release dist/AppIcon.icns
 	codesign --force --options runtime --timestamp \
 		--entitlements $(ENTITLEMENTS) \
 		--sign "$(SIGN_IDENTITY)" $(APP)
+	@$(MAKE) --no-print-directory verify-resources
 	@echo "built $(APP) (identity: $(SIGN_IDENTITY))"
 ifeq ($(SIGN_IDENTITY),-)
 	@echo ""
@@ -108,6 +109,24 @@ endif
 	ditto -c -k --sequesterRsrc --keepParent $(APP) dist/TkTracker-$(VERSION).zip
 	@echo "notarized and stapled dist/TkTracker-$(VERSION).zip"
 
+# Asserts the packaged app can reach its resources, using the app's own binary
+# so Bundle.main is the .app. The resolved path must be *inside* the bundle: a
+# developer-machine fallback resolving to .build would otherwise let a broken
+# copy ship and crash on every other Mac.
+verify-resources:
+	@echo "== bundled resources =="
+	@set -e; \
+	out="$$($(APP)/Contents/MacOS/TkTracker --selfcheck)" || { \
+		echo "$$out" | sed 's/^/  /'; \
+		echo "error: selfcheck failed — the app cannot reach its bundled resources" >&2; \
+		exit 1; }; \
+	echo "$$out" | sed 's/^/  /'; \
+	echo "$$out" | grep -q "pricing.json $(CURDIR)/$(APP)/" || { \
+		echo "error: pricing.json did not resolve inside the app bundle." >&2; \
+		echo "       $(APP)/Contents/Resources must contain TkTracker_TkTracker.bundle." >&2; \
+		exit 1; }; \
+	echo "  resources resolve inside the bundle"
+
 verify-signature:
 	@echo "== signature =="
 	codesign --verify --deep --strict --verbose=2 $(APP)
@@ -118,6 +137,17 @@ verify-signature:
 		echo "  (rejected — expected for an ad-hoc build; notarize for distribution)"
 	@echo "== staple =="
 	xcrun stapler validate $(APP) || echo "  (no ticket stapled)"
+
+# CI gate after notarization. Unlike verify-signature above, nothing here is
+# tolerated: the release notes assert the build is notarized and stapled, so an
+# artifact that cannot prove it must fail the job rather than be published.
+verify-signature-strict: verify-resources
+	codesign --verify --deep --strict --verbose=2 $(APP)
+	codesign --display --verbose=4 $(APP) 2>&1 | grep -q 'flags=.*runtime' \
+		|| { echo "error: hardened runtime flag not set" >&2; exit 1; }
+	spctl --assess --type execute --verbose=4 $(APP)
+	xcrun stapler validate $(APP)
+	@echo "signature, hardened runtime, Gatekeeper and staple all verified"
 
 install: app
 	rm -rf "$(PREFIX)/TkTracker.app"
