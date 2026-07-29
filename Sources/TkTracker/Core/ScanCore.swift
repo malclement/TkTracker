@@ -173,6 +173,27 @@ struct ScanCore: Sendable {
             changed = true
         }
 
+        // Repair project attribution on digests that will not be re-parsed.
+        //
+        // `projectDir` is computed during discovery but only stored when a file is
+        // actually parsed, and the change-detection filter below skips anything
+        // whose size and mtime are unchanged. So the symlinked-root fix would
+        // otherwise never reach an existing install: every already-scanned session
+        // would keep its wrong project name until the file happened to grow, which
+        // for a completed session is never.
+        if source == .claude {
+            for meta in files {
+                guard var digest = result[meta.url.path],
+                      digest.projectDir != meta.projectDir,
+                      !meta.projectDir.isEmpty
+                else { continue }
+                Diagnostics.scan.notice("repaired project attribution for a cached session")
+                digest.projectDir = meta.projectDir
+                result[meta.url.path] = digest
+                changed = true
+            }
+        }
+
         // Oldest-first biases the cold-scan claim race toward original sessions.
         // Exactly-once counting never depends on order — only display attribution
         // does, and claims persist, so attribution is stable after the first scan.

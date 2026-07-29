@@ -26,6 +26,20 @@ actor UsageEngine {
     private var states: [UsageSource: SourceState]
     private let order: [UsageSource]
     private var lastSave = Date.distantPast
+
+    /// Test seam: awaited once, after a detached scan returns but before its
+    /// result is applied.
+    ///
+    /// The generation guard below only matters when a reset lands while a scan is
+    /// in flight, and that interleaving cannot be produced reliably by racing two
+    /// calls — so without a seam the test for it passed whether or not the guard
+    /// existed. One-shot, so the reset performed inside the hook does not re-enter
+    /// it. Nil in every non-test path.
+    private var scanInterleaveHook: (@Sendable () async -> Void)?
+
+    func setScanInterleaveHook(_ hook: (@Sendable () async -> Void)?) {
+        scanInterleaveHook = hook
+    }
     /// Bumped by reset(). A refresh whose detached scan started before a reset
     /// must drop its result, or it would resurrect the state the user purged.
     private var generation = 0
@@ -105,6 +119,10 @@ actor UsageEngine {
             let result = await Task.detached(priority: .userInitiated) {
                 core.refreshed(digests: digestsSnapshot, claims: claimsSnapshot)
             }.value
+            if let hook = scanInterleaveHook {
+                scanInterleaveHook = nil
+                await hook()
+            }
             guard startGeneration == generation, var updated = states[source] else {
                 Diagnostics.scan.notice("dropped stale \(source.rawValue) scan result after reset")
                 continue
