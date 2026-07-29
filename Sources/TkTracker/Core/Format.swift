@@ -7,13 +7,42 @@ enum Format {
     /// read wrong in every locale that groups or separates differently. These
     /// helpers format through `NumberFormatter` so a French user sees `4,83` and
     /// a German user `4,83`, while the currency stays honest about its unit.
-    private static let decimal: NumberFormatter = {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        f.usesGroupingSeparator = true
-        return f
+    /// One immutable formatter per (fraction digits, grouping) combination.
+    ///
+    /// Reconfiguring a single shared `NumberFormatter` per call looks tidy but
+    /// throws away its cached `CFNumberFormatter` on every mutation, so each call
+    /// re-derives an ICU formatter from the locale — orders of magnitude slower
+    /// than the `String(format:)` it replaced, serialized behind one lock, and on
+    /// paths that format hundreds of values per render (the heatmap's tooltips,
+    /// every table row, the menu-bar tick). Formatters are created once, never
+    /// mutated afterwards, and `string(from:)` on a stable formatter is
+    /// thread-safe.
+    private struct FormatterKey: Hashable {
+        let min: Int
+        let max: Int
+        let grouping: Bool
+    }
+
+    private static let formatters: [FormatterKey: NumberFormatter] = {
+        var out: [FormatterKey: NumberFormatter] = [:]
+        for min in 0...4 {
+            for max in min...4 {
+                for grouping in [true, false] {
+                    let f = NumberFormatter()
+                    f.numberStyle = .decimal
+                    f.minimumFractionDigits = min
+                    f.maximumFractionDigits = max
+                    f.usesGroupingSeparator = grouping
+                    out[FormatterKey(min: min, max: max, grouping: grouping)] = f
+                }
+            }
+        }
+        return out
     }()
-    private static let formatterLock = NSLock()
+
+    /// The locale's decimal separator, resolved once — `Locale.current` lookups
+    /// were happening per call inside `trim`.
+    private static let decimalSeparator = Locale.current.decimalSeparator ?? "."
 
     /// Locale-aware fixed-fraction rendering. `grouping` is off for compact
     /// forms, where width matters more than readability.
@@ -23,12 +52,10 @@ enum Format {
         max: Int,
         grouping: Bool = true
     ) -> String {
-        formatterLock.lock()
-        defer { formatterLock.unlock() }
-        decimal.minimumFractionDigits = min
-        decimal.maximumFractionDigits = max
-        decimal.usesGroupingSeparator = grouping
-        return decimal.string(from: NSNumber(value: value)) ?? String(format: "%.\(max)f", value)
+        guard let formatter = formatters[FormatterKey(min: min, max: max, grouping: grouping)] else {
+            return String(format: "%.\(max)f", value)
+        }
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.\(max)f", value)
     }
     /// 845 -> "845", 12_400 -> "12.4K", 3_200_000 -> "3.2M", 1_400_000_000 -> "1.4B"
     static func tokens(_ n: Int64) -> String {
@@ -120,10 +147,9 @@ enum Format {
     /// trims to "4.5" in en.
     private static func trim(_ v: Double, _ digits: Int) -> String {
         var s = number(v, min: digits, max: digits, grouping: false)
-        let separator = Locale.current.decimalSeparator ?? "."
-        guard s.contains(separator) else { return s }
+        guard s.contains(decimalSeparator) else { return s }
         while s.hasSuffix("0") { s.removeLast() }
-        if s.hasSuffix(separator) { s.removeLast() }
+        if s.hasSuffix(decimalSeparator) { s.removeLast() }
         return s
     }
 }

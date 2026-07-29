@@ -635,30 +635,57 @@ enum StatsBuilder {
         let elapsed = nowEpoch - todayStart
         guard elapsed > 1800 else { return nil } // too early to say anything
 
-        var shares: [Double] = []
+        // Day windows, oldest first. Built once so the hour scan below can locate
+        // an hour's day by binary search instead of rescanning all of history
+        // per lookback day — that was 21 × |hourAll|, and |hourAll| grows with
+        // every hour ever recorded.
+        struct Day { let start: Double; let end: Double; let sameTime: Double }
         let todayStartDate = Date(timeIntervalSince1970: todayStart)
-        for dayOffset in 1...lookbackDays {
+        var days: [Day] = []
+        for dayOffset in stride(from: lookbackDays, through: 1, by: -1) {
             guard let dayStartDate = calendar.date(byAdding: .day, value: -dayOffset, to: todayStartDate) else { continue }
-            let dayStart = dayStartDate.timeIntervalSince1970
-            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStartDate)?.timeIntervalSince1970
-                ?? (dayStart + 86_400)
-            let sameTime = dayStart + elapsed
+            let start = dayStartDate.timeIntervalSince1970
+            let end = calendar.date(byAdding: .day, value: 1, to: dayStartDate)?.timeIntervalSince1970
+                ?? (start + 86_400)
+            days.append(Day(start: start, end: end, sameTime: start + elapsed))
+        }
+        guard let windowStart = days.first?.start, let windowEnd = days.last?.end else { return nil }
 
-            var total = 0.0
-            var byNow = 0.0
-            for (hour, cost) in hourAll {
-                let h = Double(hour)
-                guard h >= dayStart, h < dayEnd else { continue }
-                total += cost
-                if h + 3600 <= sameTime {
-                    byNow += cost
-                } else if h < sameTime {
-                    byNow += cost * (sameTime - h) / 3600 // partial boundary hour
+        var totals = [Double](repeating: 0, count: days.count)
+        var byNow = [Double](repeating: 0, count: days.count)
+        for (hour, cost) in hourAll {
+            let h = Double(hour)
+            guard h >= windowStart, h < windowEnd else { continue }
+            // Days are contiguous and sorted; find the containing one.
+            var low = 0
+            var high = days.count - 1
+            var index = -1
+            while low <= high {
+                let mid = (low + high) / 2
+                if h < days[mid].start {
+                    high = mid - 1
+                } else if h >= days[mid].end {
+                    low = mid + 1
+                } else {
+                    index = mid
+                    break
                 }
             }
+            guard index >= 0 else { continue }
+            totals[index] += cost
+            let sameTime = days[index].sameTime
+            if h + 3600 <= sameTime {
+                byNow[index] += cost
+            } else if h < sameTime {
+                byNow[index] += cost * (sameTime - h) / 3600 // partial boundary hour
+            }
+        }
+
+        var shares: [Double] = []
+        for index in days.indices {
             // Skip quiet days: a day with almost no spend has a meaningless shape.
-            guard total > 0.05 else { continue }
-            shares.append(min(1, byNow / total))
+            guard totals[index] > 0.05 else { continue }
+            shares.append(min(1, byNow[index] / totals[index]))
         }
 
         guard shares.count >= minimumDays else { return nil }

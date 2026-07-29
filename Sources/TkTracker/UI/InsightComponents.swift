@@ -77,16 +77,25 @@ struct AllowanceGauge: View {
 /// reused to encode magnitude. Intensity is on a square-root scale so ordinary
 /// hours stay visible next to an outlier afternoon.
 struct ActivityHeatmap: View {
-    let cells: [HeatCell]
     var calendar: Calendar = .current
 
-    private var byKey: [Int: HeatCell] {
-        Dictionary(cells.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    /// Derived once at init, not as computed properties.
+    ///
+    /// Both of these are read from inside the nested 7×24 `ForEach`, so as
+    /// computed properties they rebuilt the whole dictionary and re-scanned every
+    /// cost for each of the 168 cells — quadratic work on the main thread, on
+    /// every stats change and every scroll or hover pass.
+    private let byKey: [Int: HeatCell]
+    private let peak: Double
+
+    init(cells: [HeatCell], calendar: Calendar = .current) {
+        self.calendar = calendar
+        self.byKey = Dictionary(cells.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.peak = max(cells.map(\.cost).max() ?? 0, 0.0001)
+        self.busiest = cells.max(by: { $0.cost < $1.cost })
     }
 
-    private var peak: Double {
-        max(cells.map(\.cost).max() ?? 0, 0.0001)
-    }
+    private let busiest: HeatCell?
 
     /// Weekday numbers in the user's week order (Monday-first in most of Europe,
     /// Sunday-first in the US) rather than a hardcoded 1...7.
@@ -171,7 +180,7 @@ struct ActivityHeatmap: View {
     }
 
     private var busiestDescription: String {
-        guard let busiest = cells.max(by: { $0.cost < $1.cost }) else { return "no activity" }
+        guard let busiest else { return "no activity" }
         let day = calendar.standaloneWeekdaySymbols.indices.contains(busiest.weekday - 1)
             ? calendar.standaloneWeekdaySymbols[busiest.weekday - 1]
             : ""
