@@ -447,9 +447,22 @@ final class UsageStore {
         return all
     }
 
-    /// Digests as the UI currently sees them, for the Shortcuts intents — so a
-    /// shortcut and the popover can never report different numbers.
-    var digestsForIntents: [FileDigest] { visibleDigests() }
+    /// Stats for an explicitly requested range and scope, independent of what the
+    /// dashboard happens to be showing.
+    ///
+    /// Shortcuts must mean what they say: asking for "all sources" has to answer
+    /// for all sources even if the window is currently filtered to one. The
+    /// user's `includeHistory` preference still applies — that is a statement
+    /// about which data is trustworthy, not a transient lens.
+    func stats(range: StatsRange, scope: SourceScope) -> DashboardStats {
+        let wanted = scope.sources.intersection(trackedSources)
+        let visible = wanted.isEmpty ? trackedSources : wanted
+        var selected = digests.filter { visible.contains($0.source) }
+        if includeHistory, visible.contains(.claude), let historyDigest {
+            selected.append(historyDigest)
+        }
+        return StatsBuilder.build(digests: selected, range: range, plan: plan)
+    }
 
     /// Recompute everything derived from the current digests without rescanning.
     /// Used when something outside the scan changes the numbers — a pricing
@@ -462,13 +475,10 @@ final class UsageStore {
         CSVExport.dailyByModel(digests: visibleDigests(), range: range)
     }
 
-    /// The full dashboard stats — the same document `report --json` emits, so a
-    /// GUI export and a CLI export are interchangeable.
+    /// The full dashboard stats — the same document `report --json` emits, via
+    /// the same encoder (`DashboardStats.jsonDocument`).
     func jsonForCurrentRange() throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        return String(decoding: try encoder.encode(stats), as: UTF8.self)
+        try stats.jsonDocument()
     }
 
     func showSessions(filteredBy projectName: String) {

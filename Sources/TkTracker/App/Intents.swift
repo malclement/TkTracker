@@ -17,11 +17,11 @@ struct TodaySpendIntent: AppIntent {
     static var openAppWhenRun = false
 
     @Parameter(title: "Source", default: .all)
-    var scope: IntentSourceScope
+    var scope: SourceScope
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Double> & ProvidesDialog {
-        let stats = try IntentSupport.stats(range: .today, scope: scope)
+        let stats = try await IntentSupport.stats(range: .today, scope: scope)
         let amount = stats.todayCost
         return .result(
             value: amount,
@@ -39,14 +39,14 @@ struct RangeSpendIntent: AppIntent {
     static var openAppWhenRun = false
 
     @Parameter(title: "Range", default: .week)
-    var range: IntentRange
+    var range: StatsRange
 
     @Parameter(title: "Source", default: .all)
-    var scope: IntentSourceScope
+    var scope: SourceScope
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Double> & ProvidesDialog {
-        let stats = try IntentSupport.stats(range: range.statsRange, scope: scope)
+        let stats = try await IntentSupport.stats(range: range, scope: scope)
         return .result(
             value: stats.cost,
             dialog: IntentDialog("\(range.label): \(Format.money(stats.cost)).")
@@ -64,7 +64,7 @@ struct BlockRemainingIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Double> & ProvidesDialog {
-        let stats = try IntentSupport.stats(range: .today, scope: .all)
+        let stats = try await IntentSupport.stats(range: .today, scope: .all)
         guard let block = stats.block, block.isActive else {
             return .result(value: 0, dialog: IntentDialog("No active block right now."))
         }
@@ -93,40 +93,43 @@ extension Notification.Name {
     static let tkTrackerOpenDashboard = Notification.Name("tktracker.openDashboard")
 }
 
-// MARK: - Parameter enums
+// MARK: - Parameter types
 
-enum IntentRange: String, AppEnum {
-    case today, week, month, quarter, all
+// The Shortcuts parameter types are the app's own `StatsRange` and `SourceScope`,
+// conformed to `AppEnum` here rather than duplicated.
+//
+// A parallel pair of enums existed first, round-tripping through `rawValue` into
+// the real types — which meant renaming a case in Core would silently retarget
+// every saved shortcut instead of failing to build. The conformances live in the
+// App layer so Core keeps no dependency on AppIntents.
 
-    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Range")
-    static var caseDisplayRepresentations: [IntentRange: DisplayRepresentation] = [
-        .today: "Today",
-        .week: "Last 7 days",
-        .month: "Last 30 days",
-        .quarter: "Last 90 days",
-        .all: "All time",
-    ]
+extension StatsRange: AppEnum {
+    public static var typeDisplayRepresentation: TypeDisplayRepresentation {
+        TypeDisplayRepresentation(name: "Range")
+    }
 
-    var statsRange: StatsRange { StatsRange(rawValue: rawValue) ?? .today }
-    var label: String { statsRange.label }
+    public static var caseDisplayRepresentations: [StatsRange: DisplayRepresentation] {
+        [
+            .today: "Today",
+            .week: "Last 7 days",
+            .month: "Last 30 days",
+            .quarter: "Last 90 days",
+            .all: "All time",
+        ]
+    }
 }
 
-enum IntentSourceScope: String, AppEnum {
-    case all, claude, codex
+extension SourceScope: AppEnum {
+    public static var typeDisplayRepresentation: TypeDisplayRepresentation {
+        TypeDisplayRepresentation(name: "Source")
+    }
 
-    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Source")
-    static var caseDisplayRepresentations: [IntentSourceScope: DisplayRepresentation] = [
-        .all: "All sources",
-        .claude: "Claude Code",
-        .codex: "Codex",
-    ]
-
-    var sources: Set<UsageSource> {
-        switch self {
-        case .all: return Set(UsageSource.allCases)
-        case .claude: return [.claude]
-        case .codex: return [.codex]
-        }
+    public static var caseDisplayRepresentations: [SourceScope: DisplayRepresentation] {
+        [
+            .all: "All sources",
+            .claude: "Claude Code",
+            .codex: "Codex",
+        ]
     }
 }
 
@@ -142,19 +145,31 @@ enum IntentSupport {
         }
     }
 
-    /// Prefer the running store's already-scanned state; fall back to a fresh
-    /// scan when the app was cold-launched just to answer this.
+    /// Resolves stats for an intent.
+    ///
+    /// Two things this deliberately does *not* do, both of which it used to:
+    ///
+    /// - Take the requested scope only sometimes. It previously used the running
+    ///   store when `scope == .all`, which silently applied whatever source lens
+    ///   the dashboard happened to be set to — so "today's spend, all sources"
+    ///   answered with Claude-only figures if the window was filtered. The
+    ///   requested scope is now always honoured, whichever path runs.
+    /// - Scan on the main actor. `CLIReport.scan` walks the filesystem and, by
+    ///   default, writes caches; doing that inline froze the UI for the duration
+    ///   of a cold scan. It now runs detached and read-only.
     @MainActor
-    static func stats(range: StatsRange, scope: IntentSourceScope) throws -> DashboardStats {
+    static func stats(range: StatsRange, scope: SourceScope) async throws -> DashboardStats {
         let store = UsageStore.shared
-        if store.hasScanned, scope == .all {
-            return StatsBuilder.build(
-                digests: store.digestsForIntents,
-                range: range,
-                plan: store.plan
-            )
+        if store.hasScanned {
+            return store.stats(range: range, scope: scope)
         }
-        switch CLIReport.scan(sources: scope.sources) {
+        // Cold launch: scan off the main actor, and do not persist — an intent is
+        // a read, and the app proper owns cache writes.
+        let sources = scope.sources
+        let outcome = await Task.detached(priority: .userInitiated) {
+            CLIReport.scan(sources: sources, persist: false)
+        }.value
+        switch outcome {
         case .failure(let message, _):
             throw IntentError.noData(message.trimmingCharacters(in: .whitespacesAndNewlines))
         case .success(let digests, _):
