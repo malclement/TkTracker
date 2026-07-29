@@ -147,6 +147,17 @@ struct DigestCache: Codable, Sendable {
     /// signal that the upgraded shape has not reached disk yet.
     var wasMigrated = false
 
+    /// Set when a file existed but this build declined to read it — a format
+    /// from a *newer* build. Not persisted.
+    ///
+    /// Without this, declining to read was worse than reading badly: `load()`
+    /// returned an empty cache, and the caller went on to fold freshly-pruned
+    /// digests into that empty cache and `save()` it straight back over the file
+    /// it had just refused. For the history archive that is unrecoverable —
+    /// those digests describe transcripts that no longer exist. Anything
+    /// carrying this flag must never be written.
+    var isUnwritable = false
+
     init(version: Int, digests: [String: FileDigest], claims: ClaimMap) {
         self.version = version
         self.digests = digests
