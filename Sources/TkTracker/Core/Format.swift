@@ -1,6 +1,35 @@
 import Foundation
 
 enum Format {
+    /// Costs are USD regardless of where you are — they come from vendor list
+    /// prices — so the `$` is fixed rather than localized. The *number* is not:
+    /// `String(format:)` takes no locale and always emits a `.` separator, which
+    /// read wrong in every locale that groups or separates differently. These
+    /// helpers format through `NumberFormatter` so a French user sees `4,83` and
+    /// a German user `4,83`, while the currency stays honest about its unit.
+    private static let decimal: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.usesGroupingSeparator = true
+        return f
+    }()
+    private static let formatterLock = NSLock()
+
+    /// Locale-aware fixed-fraction rendering. `grouping` is off for compact
+    /// forms, where width matters more than readability.
+    private static func number(
+        _ value: Double,
+        min: Int,
+        max: Int,
+        grouping: Bool = true
+    ) -> String {
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        decimal.minimumFractionDigits = min
+        decimal.maximumFractionDigits = max
+        decimal.usesGroupingSeparator = grouping
+        return decimal.string(from: NSNumber(value: value)) ?? String(format: "%.\(max)f", value)
+    }
     /// 845 -> "845", 12_400 -> "12.4K", 3_200_000 -> "3.2M", 1_400_000_000 -> "1.4B"
     static func tokens(_ n: Int64) -> String {
         let v = Double(n)
@@ -20,20 +49,21 @@ enum Format {
         switch a {
         case 0: return "$0"
         case ..<0.01: return "$" + trim(usd, 4)
-        case ..<1: return "$" + String(format: "%.3f", usd)
-        case ..<100: return "$" + String(format: "%.2f", usd)
-        case ..<1_000: return "$" + String(format: "%.0f", usd)
+        case ..<1: return "$" + number(usd, min: 3, max: 3)
+        case ..<100: return "$" + number(usd, min: 2, max: 2)
+        case ..<1_000: return "$" + number(usd, min: 0, max: 0)
         case ..<100_000: return "$" + trim(usd / 1_000, 2) + "K"
         default: return "$" + trim(usd / 1_000_000, 2) + "M"
         }
     }
 
-    /// Menu-bar variant: stable width matters more than precision.
+    /// Menu-bar variant: stable width matters more than precision, so grouping
+    /// separators are suppressed.
     static func moneyCompact(_ usd: Double) -> String {
         let a = abs(usd)
         switch a {
-        case ..<10: return "$" + String(format: "%.2f", usd)
-        case ..<1_000: return "$" + String(format: "%.0f", usd)
+        case ..<10: return "$" + number(usd, min: 2, max: 2, grouping: false)
+        case ..<1_000: return "$" + number(usd, min: 0, max: 0, grouping: false)
         default: return "$" + trim(usd / 1_000, 1) + "K"
         }
     }
@@ -41,7 +71,12 @@ enum Format {
     static func percent(_ fraction: Double) -> String {
         let p = fraction * 100
         if p > 0, p < 1 { return "<1%" }
-        return String(format: "%.0f%%", p)
+        return number(p, min: 0, max: 0) + "%"
+    }
+
+    /// "×9.2" — how many times over a subscription paid for itself.
+    static func multiple(_ value: Double) -> String {
+        value >= 10 ? "×" + number(value, min: 0, max: 0) : "×" + number(value, min: 1, max: 1)
     }
 
     static func timeAgo(_ date: Date, now: Date = Date()) -> String {
@@ -76,13 +111,19 @@ enum Format {
 
     /// "+38%" / "-12%".
     static func signedPercent(_ fraction: Double) -> String {
-        String(format: "%+.0f%%", fraction * 100)
+        let value = fraction * 100
+        return (value >= 0 ? "+" : "") + number(value, min: 0, max: 0) + "%"
     }
 
+    /// Trailing-zero-trimmed, locale-aware. Trimming happens against the locale's
+    /// own decimal separator, so "4,50" trims to "4,5" in fr just as "4.50"
+    /// trims to "4.5" in en.
     private static func trim(_ v: Double, _ digits: Int) -> String {
-        var s = String(format: "%.\(digits)f", v)
-        while s.contains("."), s.hasSuffix("0") { s.removeLast() }
-        if s.hasSuffix(".") { s.removeLast() }
+        var s = number(v, min: digits, max: digits, grouping: false)
+        let separator = Locale.current.decimalSeparator ?? "."
+        guard s.contains(separator) else { return s }
+        while s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(separator) { s.removeLast() }
         return s
     }
 }
