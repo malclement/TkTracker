@@ -156,27 +156,136 @@ final class EngineTests {
     }
 
     @Test func resetDropsAnInFlightScanInsteadOfResurrectingIt() async throws {
-        // The generation guard: a refresh whose detached scan started before a
-        // reset must discard its result, or a purge would silently undo itself.
+        // A refresh whose scan started before a reset must discard its result, or
+        // "Rescan everything" would silently undo itself.
+        //
+        // Racing two calls cannot produce that interleaving reliably, so this
+        // drives it through the engine's interleave seam. The setup is arranged so
+        // the stale result and the correct one differ observably: the session file
+        // is deleted *during* the in-flight scan, so a reset sees an empty
+        // directory while the scan already in progress still holds the session.
+        // Applying the stale result would resurrect it.
         let root = dir.appendingPathComponent("root-f", isDirectory: true)
         try seedSession(root: root, name: "s1.jsonl", id: "m1", request: "r1")
+        let file = root.appendingPathComponent("-Users-x-p/s1.jsonl")
 
         let engine = makeEngine(root: root, suffix: "f")
         _ = await engine.bootstrap()
+        let before = await engine.refresh(sources: [.claude])
+        #expect(before.digests.count == 1) // the session is known
 
-        // Kick off a refresh and a reset concurrently. Whatever the interleaving,
-        // the end state must be self-consistent: exactly one digest for the one
-        // file on disk, counted exactly once — never two copies, never zero.
-        async let refreshed = engine.refresh(sources: [.claude])
-        async let reset = engine.reset(rescanning: [.claude])
-        _ = await refreshed
-        _ = await reset
+        await engine.setScanInterleaveHook { [engine] in
+            // Runs while the next scan's result is pending.
+            try? FileManager.default.removeItem(at: file)
+            _ = await engine.reset(rescanning: [.claude])
+        }
 
-        let settled = await engine.refresh(sources: [.claude])
-        #expect(settled.digests.count == 1)
-        #expect(settled.digests.first?.totals.messages == 1)
-        #expect(settled.digests.first?.totals.input == 100)
-        #expect(settled.claimCount == 1)
+        let stale = await engine.refresh(sources: [.claude])
+        // The purge stands: no digest, because the file was gone at reset time and
+        // nothing had archived it yet. Without the generation guard the in-flight
+        // scan's snapshot would have written the session back here.
+        #expect(stale.digests.isEmpty, "stale scan result must not survive a reset")
+        #expect(stale.claimCount == 0)
+
+        // And the state is genuinely settled, not merely empty for one call.
+        let after = await engine.refresh(sources: [.claude])
+        #expect(after.digests.isEmpty)
+    }
+
+    @Test func cacheWriteFailureIsReported() async throws {
+        // ScanHealth.cacheWriteFailed drives the UI's "cache could not be saved"
+        // banner. Nothing exercised the failing path, so the whole chain from
+        // saveCache -> flush -> RefreshReport -> ScanHealth was unverified.
+        let root = dir.appendingPathComponent("root-h", isDirectory: true)
+        try seedSession(root: root, name: "s1.jsonl", id: "m1", request: "r1")
+
+        // Point the cache at a path that cannot be created: an existing *file*
+        // stands where the parent directory would have to be.
+        let blocker = dir.appendingPathComponent("blocked")
+        try Data("not a directory".utf8).write(to: blocker)
+        let core = ScanCore(
+            source: .claude,
+            root: root,
+            cacheURL: blocker.appendingPathComponent("nested/cache.json")
+        )
+        let archive = HistoryArchive(url: dir.appendingPathComponent("archive-h.json"))
+        let engine = UsageEngine(pipelines: [(core: core, archive: archive)])
+
+        _ = await engine.bootstrap()
+        let report = await engine.refresh(sources: [.claude])
+        #expect(report.cacheWriteFailed, "an unwritable cache path must be reported")
+        #expect(!report.digests.isEmpty, "the scan itself still succeeds")
+
+        // And it reaches the UI-facing summary.
+        let health = ScanHealth(
+            lastScan: Date(), lastScanDuration: report.duration,
+            digestCount: report.digests.count, claimCount: report.claimCount,
+            unreadableFiles: report.unreadable, cacheWriteFailed: report.cacheWriteFailed
+        )
+        #expect(health.hasProblem)
+        #expect(health.problemSummary == "cache could not be saved")
+
+        // Flush keeps reporting failure rather than silently marking state clean.
+        #expect(!(await engine.flush()))
+    }
+
+    @Test func staleProjectAttributionIsRepairedWithoutReparsing() async throws {
+        // The symlinked-root fix computes projectDir during discovery but only
+        // stored it when a file was parsed — and unchanged files are never
+        // re-parsed, so an existing install would have kept its wrong project
+        // names forever.
+        let root = dir.appendingPathComponent("root-i", isDirectory: true)
+        try seedSession(root: root, name: "s1.jsonl", id: "m1", request: "r1")
+        let path = root.appendingPathComponent("-Users-x-p/s1.jsonl").path
+
+        let core = ScanCore(
+            source: .claude,
+            root: root,
+            cacheURL: dir.appendingPathComponent("cache-i.json")
+        )
+        let first = core.refreshed(digests: [:], claims: ClaimMap())
+        #expect(first.digests[path]?.projectDir == "-Users-x-p")
+
+        // Simulate a cache written by the buggy build: right digest, wrong project.
+        var damaged = try #require(first.digests[path])
+        damaged.projectDir = "private"
+        let repaired = core.refreshed(digests: [path: damaged], claims: first.claims)
+
+        #expect(repaired.digests[path]?.projectDir == "-Users-x-p")
+        #expect(repaired.changed, "a repair must mark the cache dirty so it persists")
+        // Repaired in place — the file was not re-read, so the offset is untouched.
+        #expect(repaired.digests[path]?.offset == damaged.offset)
+        #expect(repaired.digests[path]?.totals.messages == 1)
+    }
+
+    @Test func symlinkedRootStillAttributesProjectsCorrectly() throws {
+        // The original defect: when the root path did not literally prefix the
+        // enumerated file path, every project name became the first component of
+        // the absolute path ("private").
+        // The realistic shape is a symlinked *ancestor*, which is how /var ->
+        // /private/var and a symlinked CLAUDE_CONFIG_DIR both present: the root
+        // itself is a real directory, but the path used to reach it is not the
+        // path the enumerator reports back.
+        let realParent = dir.appendingPathComponent("real-parent", isDirectory: true)
+        let realRoot = realParent.appendingPathComponent("projects", isDirectory: true)
+        let project = realRoot.appendingPathComponent("-Users-x-proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try (assistantLine(id: "m1", request: "r1") + "\n")
+            .write(to: project.appendingPathComponent("s1.jsonl"), atomically: true, encoding: .utf8)
+
+        let linkedParent = dir.appendingPathComponent("linked-parent")
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realParent)
+        let rootViaLink = linkedParent.appendingPathComponent("projects", isDirectory: true)
+
+        let core = ScanCore(
+            source: .claude,
+            root: rootViaLink, // same directory, reached through a symlinked parent
+            cacheURL: dir.appendingPathComponent("cache-link.json")
+        )
+        let result = core.refreshed(digests: [:], claims: ClaimMap())
+        let digest = try #require(result.digests.values.first)
+        #expect(digest.projectDir == "-Users-x-proj")
+        #expect(digest.projectDir != "private")
     }
 
     @Test func unreadableFilesAreReportedNotSwallowed() async throws {

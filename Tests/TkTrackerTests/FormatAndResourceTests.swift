@@ -190,6 +190,51 @@ struct FormatAndResourceTests {
         #expect(ProjectsWatcher.nearestExistingAncestor(of: "/a/b/c/d/e/f/g/h", maxLevels: 2) == nil)
     }
 
+    @Test func watcherArmsOnAParentAndPromotesWhenTheTargetAppears() throws {
+        // The fix for "FSEvents on a missing directory": a watcher must stand in
+        // on a parent, and must become armed once the real directory shows up.
+        // The store drives that retry on its minute tick, so what matters here is
+        // that `isArmed` reflects reality and that `start()` is idempotent.
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory
+            .appendingPathComponent("tk-watch-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let target = base.appendingPathComponent("sessions", isDirectory: true)
+        #expect(!fm.fileExists(atPath: target.path))
+
+        let watcher = ProjectsWatcher(path: target.path) {}
+        defer { watcher.stop() }
+
+        // Target absent, parent present: stands in on the parent rather than
+        // creating a stream that can never fire.
+        watcher.start()
+        #expect(watcher.isArmed)
+
+        // Idempotent — a retry on an armed watcher must not tear anything down.
+        watcher.start()
+        #expect(watcher.isArmed)
+
+        watcher.stop()
+        #expect(!watcher.isArmed)
+
+        // Once the directory exists, arming targets it directly.
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        watcher.start()
+        #expect(watcher.isArmed)
+    }
+
+    @Test func watcherStaysUnarmedRatherThanWatchingHome() throws {
+        // Refusing is the point: arming FileEvents on the home directory would
+        // wake the app on everything the user does.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let watcher = ProjectsWatcher(path: home + "/.tktracker-absent-\(UUID().uuidString)") {}
+        defer { watcher.stop() }
+        watcher.start()
+        #expect(!watcher.isArmed, "must not fall back to the home directory")
+    }
+
     // MARK: - Update URL trust
 
     @Test func onlyHttpsGitHubURLsAreTrusted() {

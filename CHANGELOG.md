@@ -70,6 +70,28 @@ one step away from data the app already parsed.
 
 ### Fixed
 
+- **Bundled resources were unreachable in a distributed build**, which would
+  have crashed the app on launch on every machine except the one that built it.
+  SwiftPM's `Bundle.module` accessor calls `fatalError` when it cannot find the
+  bundle — so it can never return nil, and the documented compiled-in fallback
+  was unreachable — and it looks for the bundle at the `.app` root while
+  `make app` copies it to `Contents/Resources`. Both were masked locally by the
+  hardcoded absolute `.build` path the accessor also carries. Resource lookup is
+  now an explicit non-trapping probe, and `make app` fails the build unless the
+  resource resolves *inside* the app bundle (`make verify-resources`, backed by a
+  new `--selfcheck`).
+- **An archive this build declines to read is no longer overwritten.** `load()`
+  returned an empty cache on refusal and the caller then folded fresh state into
+  it and saved over the file — losing exact spend for sessions whose transcripts
+  are gone. A newer-format archive is now left byte-identical; a corrupt one is
+  quarantined to a `.unreadable-<stamp>` sibling so the bytes survive.
+- **`report --watch` ignored ctrl-C.** Its signal source was scheduled on the
+  main queue while the loop blocked that same thread with no run loop, so the
+  handler never ran — after `SIG_IGN` had already disabled the default. The
+  process could only be killed, and then left the terminal in the alternate
+  screen buffer with the cursor hidden. It also rewrote a multi-megabyte cache
+  every 3 seconds, emitted ANSI escapes into piped output, and silently ignored
+  `--json`/`--csv`. All four fixed.
 - **FSEvents on a missing directory**: watching a session directory that did
   not exist yet produced a stream that never fired, leaving live updates dead
   for that source until relaunch (only the 5-minute polling net caught it). The
@@ -92,6 +114,35 @@ one step away from data the app already parsed.
   it now walks back only as far as the last gap that resets the block chain.
 - An exclusivity violation in `UsageEngine.bootstrap` (overlapping access to
   the per-source state) that trapped at runtime under the new claim map.
+- Plan alerts were driven by the source-filtered view, so a transient lens could
+  silence them — the same mistake the daily budget explicitly avoids. They now
+  watch every tracked source.
+- The notifier's at-most-once-per-window guarantee held only durably, not
+  synchronously, so a burst of rebuilds could queue duplicate notifications.
+- Claims were archived only when a session first entered the archive, so one
+  that later gained buckets contributed none — reopening double counting after a
+  rescan.
+- The watcher's fallback walked up without a bound and could have armed
+  file-level FSEvents on the entire home directory. Bounded to two levels, and
+  the store retries arming so a source installed later still goes live.
+- Symlinked scan roots were only repaired for files that happened to be
+  re-parsed, so existing installs kept their wrong project names. Attribution is
+  now repaired in place during discovery.
+- The update check accepted any URL the response named and handed it to
+  `NSWorkspace.open`; only `https` on github.com is accepted now.
+- Shortcuts silently applied the dashboard's source filter when asked for "all
+  sources", and scanned on the main actor (writing caches). Intents now honour
+  the requested scope and scan detached and read-only.
+- `Format` rebuilt an ICU formatter on every call, the heatmap did quadratic work
+  per render, and the projection rescanned all history once per lookback day.
+- The Shortcuts parameter types were a parallel copy of `StatsRange` and
+  `SourceScope` bridged by raw string, so renaming a case in either would have
+  silently retargeted saved shortcuts. They now conform to `AppEnum` directly.
+- The GUI JSON export and `report --json` are now genuinely the same document:
+  one encoder, and the CLI applies the configured plan.
+- `AllowanceGauge` reimplemented `ShareBar` and defined a second status ramp that
+  escalated at 0.95 where the context gauge used 0.92. One ramp
+  (`Theme.fillColor`), one bar.
 
 ## [1.4.0] - 2026-07-08
 
