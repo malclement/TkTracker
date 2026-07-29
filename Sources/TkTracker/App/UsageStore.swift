@@ -23,6 +23,9 @@ final class UsageStore {
     private(set) var colorScale = ModelColorScale(palette: [])
     private(set) var isScanning = false
     private(set) var hasScanned = false
+    /// Result of the last scan — surfaced in the UI when something went wrong,
+    /// and dumped verbatim by Settings → Copy diagnostics.
+    private(set) var scanHealth = ScanHealth()
 
     var range: StatsRange {
         didSet {
@@ -98,6 +101,29 @@ final class UsageStore {
         didSet { UserDefaults.standard.set(dailyBudget, forKey: "dailyBudget") }
     }
 
+    /// Subscription plan, for the allowance gauges and the value multiple.
+    /// Defaults to `.none` so no limit is ever shown that the user didn't set.
+    var plan: UsagePlan {
+        didSet {
+            plan.save()
+            rebuild()
+        }
+    }
+
+    /// Opt-in release check. Off by default; see `UpdateChecker`.
+    var checksForUpdates: Bool {
+        didSet {
+            UserDefaults.standard.set(checksForUpdates, forKey: "checksForUpdates")
+            if checksForUpdates {
+                Task { await updateChecker.checkIfDue(enabled: true) }
+            } else {
+                updateChecker.reset()
+            }
+        }
+    }
+
+    let updateChecker = UpdateChecker()
+
     /// Today's spend across ALL tracked sources — the budget is a standing
     /// commitment about total spend, so a transient view filter must never
     /// disarm it (the visible `stats.todayCost` follows the filter; this
@@ -146,6 +172,8 @@ final class UsageStore {
         trackCodex = d.object(forKey: "trackCodex") as? Bool ?? true
         sourceScope = d.string(forKey: "sourceScope").flatMap(SourceScope.init(rawValue:)) ?? .all
         dailyBudget = d.double(forKey: "dailyBudget")
+        plan = UsagePlan.load(from: d)
+        checksForUpdates = d.bool(forKey: "checksForUpdates") // absent = false = opted out
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -161,6 +189,30 @@ final class UsageStore {
             let remaining = Format.durationCompact(block.end.timeIntervalSince(stats.generatedAt))
             return "\(Format.moneyCompact(block.cost)) · \(remaining)"
         }
+    }
+
+    /// Spoken form of the menu bar figure — the compact "$4.83 · 2h05" reads as
+    /// noise otherwise.
+    var menuBarAccessibilityValue: String {
+        var parts: [String] = []
+        switch menuBarDisplay {
+        case .icon:
+            parts.append("\(Format.money(stats.todayCost)) today")
+        case .cost:
+            parts.append("\(Format.money(stats.todayCost)) today")
+        case .tokens:
+            parts.append("\(Format.tokens(stats.todayTotals.total)) tokens today")
+        case .block:
+            if let block = stats.block, block.isActive {
+                let left = Format.duration(block.end.timeIntervalSince(stats.generatedAt))
+                parts.append("\(Format.money(block.cost)) this block, \(left) remaining")
+            } else {
+                parts.append("\(Format.money(stats.todayCost)) today")
+            }
+        }
+        if stats.activeSessions > 0 { parts.append("\(stats.activeSessions) live sessions") }
+        if isOverBudget { parts.append("over daily budget") }
+        return parts.joined(separator: ", ")
     }
 
     var dataDirExists: Bool { FileManager.default.fileExists(atPath: dataRoot.path) }
@@ -188,12 +240,13 @@ final class UsageStore {
         guard !started else { return }
         started = true
 
-        digests = await engine.bootstrap()
-        rebuildHistoryDigest()
+        Diagnostics.app.info("starting TkTracker \(AppVersion.current, privacy: .public)")
+        apply(await engine.bootstrap())
         if !digests.isEmpty { rebuild() }
 
         await refreshNow()
         startWatchers()
+        await updateChecker.checkIfDue(enabled: checksForUpdates)
 
         minuteLoop = Task { [weak self] in
             while !Task.isCancelled {
@@ -238,9 +291,7 @@ final class UsageStore {
         }
         refreshing = true
         if !hasScanned { isScanning = true }
-        digests = await engine.refresh(sources: trackedSources)
-        rebuildHistoryDigest()
-        rebuild()
+        apply(await engine.refresh(sources: trackedSources))
         hasScanned = true
         isScanning = false
         refreshing = false
@@ -252,10 +303,23 @@ final class UsageStore {
 
     func resetCacheAndRescan() async {
         isScanning = true
-        digests = await engine.reset(rescanning: trackedSources)
+        apply(await engine.reset(rescanning: trackedSources))
+        isScanning = false
+    }
+
+    /// Fold a scan result into the store: digests, health, and everything derived.
+    private func apply(_ report: UsageEngine.RefreshReport) {
+        digests = report.digests
+        scanHealth = ScanHealth(
+            lastScan: Date(),
+            lastScanDuration: report.duration,
+            digestCount: report.digests.count,
+            claimCount: report.claimCount,
+            unreadableFiles: report.unreadable,
+            cacheWriteFailed: report.cacheWriteFailed
+        )
         rebuildHistoryDigest()
         rebuild()
-        isScanning = false
     }
 
     /// The imported pre-cleanup estimate is Claude-only; its cutoff must come
@@ -297,10 +361,16 @@ final class UsageStore {
     private func rebuild() {
         claudePresent = dataDirExists || digests.contains { $0.source == .claude }
         codexPresent = codexDataDirExists || digests.contains { $0.source == .codex }
-        stats = StatsBuilder.build(digests: visibleDigests(), range: range)
+        stats = StatsBuilder.build(digests: visibleDigests(), range: range, plan: plan)
         colorScale = ModelColorScale(palette: stats.modelPalette)
         trackedTodayCost = trackedTodayCostNow()
         BudgetNotifier.notifyIfCrossed(todayCost: trackedTodayCost, budget: dailyBudget)
+        if let gauge = stats.blockGauge, let block = stats.block {
+            BudgetNotifier.notifyBlockNearLimit(gauge: gauge, blockStart: block.start)
+        }
+        if let gauge = stats.weeklyGauge {
+            BudgetNotifier.notifyWeeklyNearLimit(gauge: gauge)
+        }
     }
 
     /// Today's cost over all tracked sources, ignoring the view filter (the
@@ -326,8 +396,28 @@ final class UsageStore {
         return all
     }
 
+    /// Digests as the UI currently sees them, for the Shortcuts intents — so a
+    /// shortcut and the popover can never report different numbers.
+    var digestsForIntents: [FileDigest] { visibleDigests() }
+
+    /// Recompute everything derived from the current digests without rescanning.
+    /// Used when something outside the scan changes the numbers — a pricing
+    /// override, for instance.
+    func refreshDerived() {
+        rebuild()
+    }
+
     func csvForCurrentRange() -> String {
         CSVExport.dailyByModel(digests: visibleDigests(), range: range)
+    }
+
+    /// The full dashboard stats — the same document `report --json` emits, so a
+    /// GUI export and a CLI export are interchangeable.
+    func jsonForCurrentRange() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return String(decoding: try encoder.encode(stats), as: UTF8.self)
     }
 
     func showSessions(filteredBy projectName: String) {

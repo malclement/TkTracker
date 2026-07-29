@@ -17,13 +17,13 @@ enum Main {
 
             Commands:
               report [--json|--csv] [--range today|week|month|quarter|all]
-                     [--source claude|codex|all] [--transcripts-only]
+                     [--source claude|codex|all] [--transcripts-only] [--watch]
                   Print a usage report. --json emits the full dashboard stats;
                   --csv emits per-day, per-source, per-model rows. --source
                   restricts it to one tool (default: all). By default the report
                   blends in estimated pre-cleanup history from Claude Code's
                   stats cache; --transcripts-only restricts it to exact
-                  transcript data.
+                  transcript data. --watch redraws every 3s until interrupted.
               --version
                   Print the version and exit.
 
