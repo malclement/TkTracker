@@ -366,6 +366,99 @@ final class CoreTests {
         #expect(cacheRaw?["claims"] == nil)
     }
 
+    @Test func archiveFromTheFutureIsNeverOverwritten() throws {
+        // Declining to read used to be worse than reading badly: `load()`
+        // returned an empty archive and the caller then folded fresh state into
+        // it and saved straight back over the file it had just refused —
+        // destroying exact spend for sessions whose transcripts are gone.
+        let url = dir.appendingPathComponent("future-archive.json")
+        let future = #"{"version":99,"claimPaths":["/x.jsonl"],"claimOwners":{"m1:r1":0},"digests":{}}"#
+        try Data(future.utf8).write(to: url)
+        let before = try Data(contentsOf: url)
+
+        let archive = HistoryArchive(url: url)
+        let loaded = archive.load()
+        #expect(loaded.digests.isEmpty)
+        #expect(loaded.isUnwritable)
+
+        // updated() must decline outright, so no save is even attempted.
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        #expect(HistoryArchive.updated(loaded, digests: ["/gone.jsonl": pruned], claims: ClaimMap()) == nil)
+
+        // And a direct save is refused rather than clobbering the file.
+        #expect(!archive.save(loaded))
+        #expect(try Data(contentsOf: url) == before, "the newer archive must be byte-identical")
+    }
+
+    @Test func corruptArchiveIsQuarantinedNotDestroyed() throws {
+        // A corrupt archive still holds the only record of pruned sessions, so it
+        // is moved aside (a later build may salvage it) rather than overwritten —
+        // while still letting the app start a fresh archive.
+        let url = dir.appendingPathComponent("corrupt-archive.json")
+        try Data("{ this is not json".utf8).write(to: url)
+
+        let archive = HistoryArchive(url: url)
+        let loaded = archive.load()
+        #expect(loaded.digests.isEmpty)
+        #expect(!loaded.isUnwritable, "after quarantine the app may write a fresh archive")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+
+        // The original bytes survive under a sibling name.
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let quarantined = siblings.filter { $0.hasPrefix("corrupt-archive.json.unreadable-") }
+        #expect(quarantined.count == 1)
+        let recovered = try String(
+            contentsOf: dir.appendingPathComponent(quarantined[0]), encoding: .utf8
+        )
+        #expect(recovered == "{ this is not json")
+
+        // A fresh archive can now be written.
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        let fresh = try #require(HistoryArchive.updated(
+            loaded, digests: ["/gone.jsonl": pruned], claims: ["m1:r1": "/gone.jsonl"]
+        ))
+        #expect(archive.save(fresh))
+        #expect(archive.load().claims["m1:r1"] == "/gone.jsonl")
+    }
+
+    @Test func archiveHarvestsClaimsWhenAnArchivedDigestChanges() throws {
+        // Claims used to be harvested only on first insert, so an
+        // already-archived digest that later gained buckets contributed none —
+        // reopening double counting after a reset.
+        var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
+        pruned.missing = true
+        pruned.buckets = [HourBucket(
+            hour: 1_780_000_000 / 3600 * 3600,
+            model: "claude-opus-4-8",
+            totals: TokenTotals(input: 100, messages: 1)
+        )]
+
+        let first = try #require(HistoryArchive.updated(
+            DigestCache(version: HistoryArchive.writeVersion, digests: [:], claims: ClaimMap()),
+            digests: ["/gone.jsonl": pruned],
+            claims: ["m1:r1": "/gone.jsonl"]
+        ))
+        #expect(first.claims["m1:r1"] == "/gone.jsonl")
+
+        // The same session reappears, is re-parsed with a second message, and is
+        // pruned again. Its new claim must be archived too.
+        var grown = pruned
+        grown.buckets.append(HourBucket(
+            hour: 1_780_003_600 / 3600 * 3600,
+            model: "claude-opus-4-8",
+            totals: TokenTotals(input: 50, messages: 1)
+        ))
+        let second = try #require(HistoryArchive.updated(
+            first,
+            digests: ["/gone.jsonl": grown],
+            claims: ["m1:r1": "/gone.jsonl", "m2:r2": "/gone.jsonl"]
+        ))
+        #expect(second.claims["m2:r2"] == "/gone.jsonl")
+        #expect(second.digests["/gone.jsonl"]?.buckets.count == 2)
+    }
+
     @Test func archiveFoldsClaimsOnlyForNewlyPrunedSessions() throws {
         // The steady-state refresh must not walk the whole claim table.
         var pruned = FileDigest(path: "/gone.jsonl", sessionId: "s", projectDir: "p")
