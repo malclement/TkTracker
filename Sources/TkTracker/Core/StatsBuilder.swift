@@ -94,6 +94,8 @@ struct SessionRow: Identifiable, Codable, Sendable {
     let title: String
     let projectName: String
     let cwd: String?
+    let gitBranch: String?
+    let firstActive: Date?
     let lastActive: Date?
     let model: String
     let modelShortName: String
@@ -108,6 +110,44 @@ struct SessionRow: Identifiable, Codable, Sendable {
     var contextFraction: Double {
         contextLimit > 0 ? min(1, Double(contextTokens) / Double(contextLimit)) : 0
     }
+
+    /// Wall-clock span from the session's first usage event to its last. This is
+    /// elapsed time, not billed time — a session left open over lunch counts the
+    /// lunch — so it is only shown alongside cost, never instead of it.
+    var duration: TimeInterval? {
+        guard let firstActive, let lastActive, lastActive > firstActive else { return nil }
+        return lastActive.timeIntervalSince(firstActive)
+    }
+
+    /// Spend per hour of elapsed session time. nil for sessions too short to be
+    /// meaningful (under a minute), where the figure would be pure noise.
+    var costPerHour: Double? {
+        guard let duration, duration >= 60 else { return nil }
+        return cost / (duration / 3600)
+    }
+}
+
+/// Usage attributed to one git branch within a project. Branch names are already
+/// recorded in both transcript formats; this surfaces them.
+struct BranchRow: Identifiable, Codable, Sendable {
+    let branch: String
+    let projectName: String
+    let sessions: Int
+    let totals: TokenTotals
+    let cost: Double
+    let lastActive: Date?
+    var id: String { "\(projectName)\u{1F}\(branch)" }
+}
+
+/// One weekday × hour-of-day cell of the activity heatmap.
+struct HeatCell: Identifiable, Codable, Sendable {
+    /// 1 = Sunday, matching `Calendar.component(.weekday:)`.
+    let weekday: Int
+    /// 0–23, local time.
+    let hour: Int
+    let cost: Double
+    let tokens: Int64
+    var id: Int { weekday * 100 + hour }
 }
 
 struct BlockInfo: Codable, Sendable {
@@ -144,6 +184,22 @@ struct DashboardStats: Codable, Sendable {
     var burnRatePerHour: Double
     /// Today's cost vs yesterday at the same time of day, as a signed fraction.
     var todayVsYesterday: Double?
+    /// Rolling 7-day and 30-day spend, independent of the selected range — plan
+    /// allowances and the value multiple are about real windows, not the view.
+    var rollingWeekCost: Double
+    var rollingMonthCost: Double
+    /// Plan allowance consumption, nil when no plan is configured.
+    var blockGauge: PlanGauge?
+    var weeklyGauge: PlanGauge?
+    /// Trailing-30-day API-equivalent value divided by the plan's monthly cost.
+    var planValueMultiple: Double?
+    /// Today's projected end-of-day total, from how far through a typical day
+    /// this time of day usually is. nil when there isn't enough history.
+    var projectedTodayCost: Double?
+    /// Weekday × hour-of-day activity over the selected range.
+    var heatmap: [HeatCell]
+    /// Per-git-branch attribution over the selected range.
+    var branches: [BranchRow]
     /// Range cost/tokens split by usage source (raw values), for the source breakdown.
     var costBySource: [String: Double]
     var totalsBySource: [String: TokenTotals]
@@ -161,6 +217,9 @@ struct DashboardStats: Codable, Sendable {
         block: nil, todayCost: 0, todayTotals: TokenTotals(), allTimeCost: 0,
         dataSince: nil, hasEstimatedHistory: false,
         burnRatePerHour: 0, todayVsYesterday: nil,
+        rollingWeekCost: 0, rollingMonthCost: 0,
+        blockGauge: nil, weeklyGauge: nil, planValueMultiple: nil, projectedTodayCost: nil,
+        heatmap: [], branches: [],
         costBySource: [:], totalsBySource: [:], todayCostBySource: [:]
     )
 }
@@ -173,7 +232,8 @@ enum StatsBuilder {
         digests: [FileDigest],
         range: StatsRange,
         now: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        plan: UsagePlan = .none
     ) -> DashboardStats {
         let nowEpoch = now.timeIntervalSince1970
         let rangeStart = range.start(now: now, calendar: calendar)?.timeIntervalSince1970
@@ -200,6 +260,15 @@ enum StatsBuilder {
             var cwd: String?
             var cwdTs: Double = -1
         }
+        struct BranchKey: Hashable { let project: String; let branch: String }
+        struct BranchAgg {
+            var totals = TokenTotals()
+            var cost = 0.0
+            var sessions = 0
+            var lastTs: Double?
+        }
+        struct HeatKey: Hashable { let weekday: Int; let hour: Int }
+        struct HeatAgg { var cost = 0.0; var tokens: Int64 = 0 }
 
         var rangeTotals = TokenTotals()
         var rangeCost = 0.0
@@ -221,8 +290,19 @@ enum StatsBuilder {
         var hasEstimatedHistory = false
         var allModelIds: Set<String> = []
         var shortNameCache: [String: String] = [:]
+        var branchAgg: [BranchKey: BranchAgg] = [:]
+        var heatAgg: [HeatKey: HeatAgg] = [:]
 
         var bucketDateCache: [Int64: Date] = [:] // UTC hour -> local chart-bucket start
+        var heatKeyCache: [Int64: HeatKey] = [:] // UTC hour -> local (weekday, hour)
+
+        // Rolling windows for plan allowances and the value multiple. These are
+        // deliberately independent of the selected range: an allowance is about
+        // a real window of time, not about what the user is currently looking at.
+        let weekStart = nowEpoch - 7 * 86_400
+        let monthStart = nowEpoch - 30 * 86_400
+        var rollingWeekCost = 0.0
+        var rollingMonthCost = 0.0
 
         for digest in digests {
             var inRange = TokenTotals()
@@ -241,6 +321,9 @@ enum StatsBuilder {
                 hourAgg.totals.add(bucket.totals)
                 hourAgg.cost += bucketCost
                 hourAll[bucket.hour] = hourAgg
+
+                if Double(bucket.hour) >= weekStart { rollingWeekCost += bucketCost }
+                if Double(bucket.hour) >= monthStart { rollingMonthCost += bucketCost }
 
                 if Double(bucket.hour) >= todayStart {
                     todayTotals.add(bucket.totals)
@@ -288,6 +371,22 @@ enum StatsBuilder {
                 agg.cost += bucketCost
                 agg.tokens = agg.tokens.saturatingAdding(bucket.totals.total)
                 chartAgg[key] = agg
+
+                // Heatmap cells are local weekday × local hour, so the grid reads
+                // as "when do I actually work" rather than as UTC.
+                let heatKey: HeatKey
+                if let cached = heatKeyCache[bucket.hour] {
+                    heatKey = cached
+                } else {
+                    let date = Date(timeIntervalSince1970: Double(bucket.hour))
+                    let parts = calendar.dateComponents([.weekday, .hour], from: date)
+                    heatKey = HeatKey(weekday: parts.weekday ?? 1, hour: parts.hour ?? 0)
+                    heatKeyCache[bucket.hour] = heatKey
+                }
+                var heat = heatAgg[heatKey] ?? HeatAgg()
+                heat.cost += bucketCost
+                heat.tokens = heat.tokens.saturatingAdding(bucket.totals.total)
+                heatAgg[heatKey] = heat
             }
 
             if inRangeCost > 0 { costBySource[digest.source.rawValue, default: 0] += inRangeCost }
@@ -310,6 +409,17 @@ enum StatsBuilder {
                     agg.cwdTs = digest.lastTs ?? 0
                 }
                 projectAgg[digest.projectDir] = agg
+
+                if let branch = digest.gitBranch, !branch.isEmpty {
+                    let (name, _) = Self.projectName(cwd: digest.cwd, projectDir: digest.projectDir)
+                    let key = BranchKey(project: name, branch: branch)
+                    var bagg = branchAgg[key] ?? BranchAgg()
+                    bagg.totals.add(inRange)
+                    bagg.cost += inRangeCost
+                    bagg.sessions += 1
+                    if let last = digest.lastTs { bagg.lastTs = max(bagg.lastTs ?? last, last) }
+                    branchAgg[key] = bagg
+                }
             }
 
             if isLive {
@@ -422,6 +532,41 @@ enum StatsBuilder {
             ? (todayCost - yesterdayByNow) / yesterdayByNow
             : nil
 
+        let block = currentBlock(hourAll: hourAll.mapValues { ($0.totals, $0.cost) }, nowEpoch: nowEpoch)
+
+        // Plan allowances. Both are nil unless the user configured a limit — the
+        // app never invents a threshold it wasn't given.
+        let blockGauge: PlanGauge? = plan.tracksBlock && block != nil
+            ? PlanGauge(used: block!.cost, limit: plan.blockLimit, windowEnd: block!.end)
+            : nil
+        let weeklyGauge: PlanGauge? = plan.tracksWeekly
+            ? PlanGauge(
+                used: rollingWeekCost,
+                limit: plan.weeklyLimit,
+                windowEnd: Date(timeIntervalSince1970: nowEpoch + 86_400)
+            )
+            : nil
+        let planValueMultiple: Double? = plan.tracksValue && plan.monthlyCost > 0
+            ? rollingMonthCost / plan.monthlyCost
+            : nil
+
+        let heatmap = heatAgg
+            .map { HeatCell(weekday: $0.key.weekday, hour: $0.key.hour, cost: $0.value.cost, tokens: $0.value.tokens) }
+            .sorted { ($0.weekday, $0.hour) < ($1.weekday, $1.hour) }
+
+        let branches = branchAgg
+            .map { key, agg in
+                BranchRow(
+                    branch: key.branch,
+                    projectName: key.project,
+                    sessions: agg.sessions,
+                    totals: agg.totals,
+                    cost: agg.cost,
+                    lastActive: agg.lastTs.map { Date(timeIntervalSince1970: $0) }
+                )
+            }
+            .sorted { $0.cost != $1.cost ? $0.cost > $1.cost : $0.totals.total > $1.totals.total }
+
         return DashboardStats(
             range: range,
             generatedAt: now,
@@ -438,7 +583,7 @@ enum StatsBuilder {
             projects: projects,
             sessions: sessionRows,
             liveSessions: Array(liveRows.prefix(4)),
-            block: currentBlock(hourAll: hourAll.mapValues { ($0.totals, $0.cost) }, nowEpoch: nowEpoch),
+            block: block,
             todayCost: todayCost,
             todayTotals: todayTotals,
             allTimeCost: allTimeCost,
@@ -446,10 +591,81 @@ enum StatsBuilder {
             hasEstimatedHistory: hasEstimatedHistory,
             burnRatePerHour: burnRatePerHour,
             todayVsYesterday: todayVsYesterday,
+            rollingWeekCost: rollingWeekCost,
+            rollingMonthCost: rollingMonthCost,
+            blockGauge: blockGauge,
+            weeklyGauge: weeklyGauge,
+            planValueMultiple: planValueMultiple,
+            projectedTodayCost: projectedToday(
+                hourAll: hourAll.mapValues(\.cost),
+                todayCost: todayCost,
+                todayStart: todayStart,
+                nowEpoch: nowEpoch,
+                calendar: calendar
+            ),
+            heatmap: heatmap,
+            branches: branches,
             costBySource: costBySource,
             totalsBySource: totalsBySource,
             todayCostBySource: todayCostBySource
         )
+    }
+
+    /// Today's projected end-of-day total.
+    ///
+    /// Extrapolating the trailing burn rate to midnight assumes you keep working
+    /// all night, which is wrong most evenings and badly wrong at 09:05. Instead
+    /// this asks the data a narrower question: on past days, what share of the
+    /// day's spend had landed by this hour? The median of that share over recent
+    /// active days divides today's spend so far.
+    ///
+    /// Returns nil when there aren't enough comparable days, or when the share is
+    /// too small to divide by — an honest "not enough history" beats a confident
+    /// wrong number.
+    static func projectedToday(
+        hourAll: [Int64: Double],
+        todayCost: Double,
+        todayStart: Double,
+        nowEpoch: Double,
+        calendar: Calendar,
+        lookbackDays: Int = 21,
+        minimumDays: Int = 5
+    ) -> Double? {
+        guard todayCost > 0.01 else { return nil }
+        let elapsed = nowEpoch - todayStart
+        guard elapsed > 1800 else { return nil } // too early to say anything
+
+        var shares: [Double] = []
+        let todayStartDate = Date(timeIntervalSince1970: todayStart)
+        for dayOffset in 1...lookbackDays {
+            guard let dayStartDate = calendar.date(byAdding: .day, value: -dayOffset, to: todayStartDate) else { continue }
+            let dayStart = dayStartDate.timeIntervalSince1970
+            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStartDate)?.timeIntervalSince1970
+                ?? (dayStart + 86_400)
+            let sameTime = dayStart + elapsed
+
+            var total = 0.0
+            var byNow = 0.0
+            for (hour, cost) in hourAll {
+                let h = Double(hour)
+                guard h >= dayStart, h < dayEnd else { continue }
+                total += cost
+                if h + 3600 <= sameTime {
+                    byNow += cost
+                } else if h < sameTime {
+                    byNow += cost * (sameTime - h) / 3600 // partial boundary hour
+                }
+            }
+            // Skip quiet days: a day with almost no spend has a meaningless shape.
+            guard total > 0.05 else { continue }
+            shares.append(min(1, byNow / total))
+        }
+
+        guard shares.count >= minimumDays else { return nil }
+        shares.sort()
+        let median = shares[shares.count / 2]
+        guard median > 0.05 else { return nil }
+        return todayCost / median
     }
 
     private static func sessionRow(digest: FileDigest, totals: TokenTotals, cost: Double, isLive: Bool) -> SessionRow {
@@ -462,6 +678,8 @@ enum StatsBuilder {
             title: digest.title ?? "Untitled session",
             projectName: projectName,
             cwd: digest.cwd,
+            gitBranch: digest.gitBranch,
+            firstActive: digest.firstTs.map { Date(timeIntervalSince1970: $0) },
             lastActive: digest.lastTs.map { Date(timeIntervalSince1970: $0) },
             model: model,
             modelShortName: model.isEmpty ? "—" : ModelFamily.shortName(for: model),
@@ -496,20 +714,62 @@ enum StatsBuilder {
 
     /// ccusage-compatible 5h billing blocks: a block opens at the first active hour,
     /// spans five hours, and the next activity past its end opens a new one.
+    ///
+    /// Block boundaries chain forward from the first hour ever recorded, so this
+    /// looks history-dependent — but a gap of a full block length always resets
+    /// the chain. Any hour that far past the previous one is necessarily
+    /// `>= blockStart + blockLength` (blockStart can never exceed the previous
+    /// hour), so it opens a block regardless of what came before. Only the
+    /// current unbroken run can affect the current block, and this walks back to
+    /// find it instead of sorting every hour ever recorded on each rebuild —
+    /// which happens every minute and on every filesystem event.
     static func currentBlock(hourAll: [Int64: (TokenTotals, Double)], nowEpoch: Double) -> BlockInfo? {
         guard !hourAll.isEmpty else { return nil }
-        let hours = hourAll.keys.sorted()
-        var blockStart = hours[0]
-        for hour in hours where hour >= blockStart + Int64(blockLength) {
-            blockStart = hour
+        let blockSeconds = Int64(blockLength)
+        let hour = 3600 as Int64
+
+        var minHour = Int64.max
+        var maxHour = Int64.min
+        for key in hourAll.keys {
+            minHour = min(minHour, key)
+            maxHour = max(maxHour, key)
         }
+
+        // Walk back an hour at a time from the newest activity. A stretch of
+        // empty hours spanning a whole block length means the chain reset after
+        // it, so nothing older matters.
+        var runStart = maxHour
+        var cursor = maxHour
+        var emptyRun: Int64 = 0
+        while cursor > minHour {
+            cursor -= hour
+            if hourAll[cursor] != nil {
+                runStart = cursor
+                emptyRun = 0
+            } else {
+                emptyRun += hour
+                // The gap between the two active hours either side is one hour
+                // wider than the empty stretch itself.
+                if emptyRun + hour >= blockSeconds { break }
+            }
+        }
+
+        var blockStart = runStart
+        var scan = runStart
+        while scan <= maxHour {
+            if hourAll[scan] != nil, scan >= blockStart + blockSeconds { blockStart = scan }
+            scan += hour
+        }
+
         var totals = TokenTotals()
         var cost = 0.0
-        for hour in hours where hour >= blockStart && hour < blockStart + Int64(blockLength) {
-            if let agg = hourAll[hour] {
+        var bucket = blockStart
+        while bucket < blockStart + blockSeconds {
+            if let agg = hourAll[bucket] {
                 totals.add(agg.0)
                 cost += agg.1
             }
+            bucket += hour
         }
         let start = Date(timeIntervalSince1970: Double(blockStart))
         let end = start.addingTimeInterval(blockLength)
