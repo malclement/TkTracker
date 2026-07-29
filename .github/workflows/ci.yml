@@ -19,6 +19,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # A malformed workflow file is only reported at dispatch time, as an
+      # opaque "workflow file issue" with a 0s run — which is how a broken
+      # release.yml got as far as a pushed tag once. Parsing them here turns that
+      # into an ordinary red build on the PR that introduces it.
+      - name: Validate workflow files
+        run: |
+          python3 - <<'PY'
+          import sys, glob, yaml
+          bad = False
+          for path in sorted(glob.glob(".github/workflows/*.yml")):
+              try:
+                  document = yaml.safe_load(open(path))
+              except Exception as error:
+                  print(f"::error file={path}::unparseable: {error}")
+                  bad = True
+                  continue
+              # `on:` parses as the boolean True in YAML 1.1.
+              if not (document.get(True) or document.get("on")):
+                  print(f"::error file={path}::no trigger — the workflow would never run")
+                  bad = True
+              if not document.get("jobs"):
+                  print(f"::error file={path}::no jobs")
+                  bad = True
+              print(f"{path}: ok")
+          sys.exit(1 if bad else 0)
+          PY
+
       - name: Swift version
         run: swift --version
 

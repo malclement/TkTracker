@@ -107,24 +107,42 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NOTARIZED: ${{ steps.signing.outputs.enabled }}
+        # Notes are assembled into a file rather than an inline --notes argument.
+        # A multi-line shell string inside a YAML block scalar has to keep every
+        # continuation line indented past the block marker; getting that wrong
+        # makes the whole workflow unparseable, which is a failure GitHub reports
+        # only as "workflow file issue" at runtime.
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          if [ "$NOTARIZED" = "true" ]; then
-            NOTE=$'> [!NOTE]\n> Signed with a Developer ID and notarized by Apple — open it normally, no quarantine step needed.'
-          else
-            NOTE=$'> [!WARNING]\n> This build is ad-hoc signed and **not notarized**. After unzipping and\n> moving `TkTracker.app` to `/Applications`, clear the quarantine flag once:\n> `xattr -dr com.apple.quarantine /Applications/TkTracker.app`\n> — or build from source with `make install`.'
-          fi
-          # Published so the Homebrew cask's sha256 can be updated from the
-          # release itself rather than trusting whatever is at the URL later.
+          # Published so the Homebrew cask's sha256 comes from the release itself
+          # rather than from trusting whatever is served at the URL later.
           DIGEST=$(shasum -a 256 "dist/TkTracker-$VERSION.zip" | cut -d' ' -f1)
           echo "sha256: $DIGEST"
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          {
+            if [ "$NOTARIZED" = "true" ]; then
+              echo '> [!NOTE]'
+              echo '> Signed with a Developer ID and notarized by Apple — open it normally,'
+              echo '> no quarantine step needed.'
+            else
+              echo '> [!WARNING]'
+              echo '> This build is ad-hoc signed and **not notarized**. After unzipping and'
+              echo '> moving `TkTracker.app` to `/Applications`, clear the quarantine flag once:'
+              echo '>'
+              echo '> `xattr -dr com.apple.quarantine /Applications/TkTracker.app`'
+              echo '>'
+              echo '> — or build from source with `make install`.'
+            fi
+            echo
+            echo '<details><summary>Homebrew cask checksum</summary>'
+            echo
+            echo '```ruby'
+            echo "sha256 \"$DIGEST\""
+            echo '```'
+            echo '</details>'
+          } > "$NOTES"
           gh release create "$GITHUB_REF_NAME" \
             "dist/TkTracker-$VERSION.zip" \
             --title "TkTracker $VERSION" \
             --generate-notes \
-            --notes "$NOTE
-
-<!-- cask -->
-\`\`\`
-sha256 \"$DIGEST\"
-\`\`\`"
+            --notes-file "$NOTES"
