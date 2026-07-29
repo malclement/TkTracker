@@ -1,0 +1,71 @@
+/* TkTracker — base localization.
+
+   English is the development language, so most UI copy is written inline in the
+   SwiftUI views and resolves to itself. This table holds the strings that are
+   built up in code (where a literal would not be extractable) plus the ones
+   whose wording is shared across surfaces.
+
+   To add a language, copy this file to <code>.lproj/Localizable.strings beside
+   it (e.g. fr.lproj) and translate the values only — never the keys. */
+
+/* Menu bar and popover */
+"popover.live_sessions" = "Live sessions";
+"popover.no_active_sessions" = "No active sessions — costs update live while %@ runs.";
+"popover.all_time" = "All time %@";
+"popover.dashboard" = "Dashboard";
+"popover.tokens_messages_today" = "%1$@ tokens · %2$lld messages today";
+"popover.burn_rate" = "%@/h";
+"popover.over_budget" = "Over %@ budget";
+
+/* Sources */
+"source.all" = "All sources";
+"source.claude" = "Claude Code";
+"source.codex" = "Codex";
+
+/* Dashboard sections */
+"section.overview" = "Overview";
+"section.projects" = "Projects";
+"section.sessions" = "Sessions";
+"section.models" = "Models";
+
+/* Stat tiles */
+"tile.spend" = "Spend";
+"tile.tokens" = "Tokens";
+"tile.cache_hit_rate" = "Cache hit rate";
+"tile.sessions" = "Sessions";
+"tile.vs_yesterday" = "vs yesterday by now";
+"tile.projected_today" = "Projected today";
+"tile.plan_value" = "Plan value";
+
+/* Ranges */
+"range.today" = "Today";
+"range.week" = "7D";
+"range.month" = "30D";
+"range.quarter" = "90D";
+"range.all" = "All";
+
+/* Settings */
+"settings.sources" = "Sources";
+"settings.menu_bar" = "Menu bar";
+"settings.budget" = "Budget";
+"settings.plan" = "Plan";
+"settings.pricing" = "Pricing";
+"settings.updates" = "Updates";
+"settings.general" = "General";
+"settings.about" = "About";
+"settings.launch_at_login" = "Launch at login";
+"settings.rescan" = "Rescan everything";
+"settings.copy_diagnostics" = "Copy diagnostics";
+
+/* Notifications */
+"notify.budget.title" = "Daily budget exceeded";
+"notify.budget.body" = "Today's usage is at %1$@ (budget %2$@).";
+"notify.block.title" = "5-hour block nearly used up";
+"notify.block.body" = "%1$@ of your %2$@ block limit used, %3$@ remaining.";
+"notify.weekly.title" = "Weekly plan limit approaching";
+"notify.weekly.body" = "%1$@ of this week's plan allowance used.";
+
+/* Empty state */
+"empty.scanning" = "Scanning…";
+"empty.no_data" = "No usage found yet";
+"empty.watching" = "Watching";
