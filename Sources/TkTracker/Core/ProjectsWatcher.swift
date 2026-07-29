@@ -26,15 +26,24 @@ final class ProjectsWatcher {
         self.onChange = onChange
     }
 
+    /// False when no acceptable directory could be watched yet — the target is
+    /// missing and its parents are either absent or too broad to subscribe to.
+    /// The store retries these on its minute tick, so a source installed after
+    /// TkTracker starts working live without a relaunch.
+    var isArmed: Bool { stream != nil }
+
     func start() {
         guard stream == nil else { return }
         let target = FileManager.default.fileExists(atPath: path) ? path : Self.nearestExistingAncestor(of: path)
         guard let target else {
-            Diagnostics.app.error("no watchable ancestor for \(self.path, privacy: .public)")
+            // Redacted: absolute paths name projects, clients and people, and
+            // the unified log is persistent and readable by other admin
+            // processes. Same policy as Diagnostics.report.
+            Diagnostics.app.error("no watchable ancestor for \(Diagnostics.redact(path: self.path), privacy: .public)")
             return
         }
         if target != path {
-            Diagnostics.app.notice("session directory absent; watching ancestor until it appears")
+            Diagnostics.app.notice("session directory absent; watching a parent until it appears")
         }
         arm(on: target)
     }
@@ -92,19 +101,35 @@ final class ProjectsWatcher {
         watchedPath = nil
     }
 
-    /// Deepest existing directory at or above `path`. Nil only if even the root
-    /// is unreachable.
-    static func nearestExistingAncestor(of path: String) -> String? {
-        var candidate = URL(fileURLWithPath: path, isDirectory: true)
+    /// Deepest existing directory above `path`, searched at most `maxLevels` up.
+    ///
+    /// Bounded on purpose. The stand-in is armed with
+    /// `kFSEventStreamCreateFlagFileEvents`, so walking all the way up would
+    /// happily settle on the home directory — or `/` — and subscribe TkTracker to
+    /// per-file events for everything the user does, waking the app constantly to
+    /// re-stat session directories that have not changed. Two levels covers the
+    /// real cases (`~/.claude` exists but `projects` does not yet; neither
+    /// exists but `~` does) and refuses anything broader.
+    static func nearestExistingAncestor(of path: String, maxLevels: Int = 2) -> String? {
         let fm = FileManager.default
-        while candidate.path != "/" {
+        let home = fm.homeDirectoryForCurrentUser.path
+        var candidate = URL(fileURLWithPath: path, isDirectory: true)
+        for _ in 0..<maxLevels {
             candidate = candidate.deletingLastPathComponent()
+            let candidatePath = candidate.path
+            if candidatePath == "/" { return nil }
             var isDirectory: ObjCBool = false
-            if fm.fileExists(atPath: candidate.path, isDirectory: &isDirectory), isDirectory.boolValue {
-                return candidate.path
+            guard fm.fileExists(atPath: candidatePath, isDirectory: &isDirectory), isDirectory.boolValue else {
+                continue
             }
+            // The home directory is far too noisy to subscribe to file events on.
+            guard ScanCore.canonicalPath(candidate) != ScanCore.canonicalPath(URL(fileURLWithPath: home)) else {
+                return nil
+            }
+            // Canonical, so it matches the paths FSEvents reports back.
+            return ScanCore.canonicalPath(candidate)
         }
-        return fm.fileExists(atPath: "/") ? "/" : nil
+        return nil
     }
 
     deinit { tearDown() }

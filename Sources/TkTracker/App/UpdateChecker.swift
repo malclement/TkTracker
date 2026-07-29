@@ -25,6 +25,21 @@ final class UpdateChecker {
 
     /// Public releases endpoint — no auth, no cookies.
     private let endpoint = URL(string: "https://api.github.com/repos/malclement/TkTracker/releases/latest")!
+    /// Known-good destination, used whenever the response's own URL is not
+    /// trustworthy.
+    nonisolated static let releasesPage = URL(string: "https://github.com/malclement/TkTracker/releases/latest")!
+
+    /// Accepts only an `https` URL on github.com. Returns nil for anything else,
+    /// including `file:`, custom schemes, and lookalike hosts. Pure, so it is
+    /// callable off the main actor (and directly testable).
+    nonisolated static func trustedReleaseURL(_ raw: String) -> URL? {
+        guard let url = URL(string: raw),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              host == "github.com" || host.hasSuffix(".github.com")
+        else { return nil }
+        return url
+    }
     private let minimumInterval: TimeInterval = 86_400
     private let defaults: UserDefaults
     private let session: URLSession
@@ -81,7 +96,12 @@ final class UpdateChecker {
 
             let latest = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
             if AppVersion.isNewer(latest, than: AppVersion.current), !release.draft, !release.prerelease {
-                let url = URL(string: release.htmlUrl) ?? endpoint
+                // The response decides a URL that a click hands to
+                // NSWorkspace.open. Anyone able to answer for api.github.com — a
+                // TLS-intercepting proxy, for instance — could otherwise point
+                // that at file:// or any registered scheme. Accept only https on
+                // github.com, and fall back to the endpoint we already trust.
+                let url = Self.trustedReleaseURL(release.htmlUrl) ?? Self.releasesPage
                 state = .available(version: latest, url: url, notes: release.body)
                 Diagnostics.update.notice("update available: \(latest, privacy: .public)")
             } else {

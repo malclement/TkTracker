@@ -7,12 +7,21 @@ import UserNotifications
 /// block for the block gauge, per week for the plan allowance). Authorization is
 /// requested lazily, on the first alert TkTracker actually wants to post.
 enum BudgetNotifier {
+    /// In-flight windows, so a second attempt cannot start before the first has
+    /// resolved. `rebuild()` runs on every filesystem event — several times a
+    /// second while a session streams — and the persisted mark is only written
+    /// once `center.add` succeeds, which is asynchronous. Without this the guard
+    /// would let a burst of rebuilds queue several identical notifications.
+    @MainActor private static var pending: Set<String> = []
+
     /// Marks the window spent only once the notification is genuinely handed to
-    /// the system.
+    /// the system, while still enforcing at-most-once *synchronously*.
     ///
-    /// The mark used to be written *before* the authorization callback resolved,
-    /// so declining the very first permission prompt silently consumed that day's
-    /// alert and nothing was posted even after permission was later granted.
+    /// The mark used to be written before the authorization callback resolved, so
+    /// declining the very first permission prompt silently consumed that day's
+    /// alert. Moving it to the completion fixed that but dropped the mutual
+    /// exclusion, hence `pending`.
+    @MainActor
     private static func post(
         key: String,
         window: String,
@@ -23,6 +32,9 @@ enum BudgetNotifier {
         // UNUserNotificationCenter requires a real bundle; skip under `swift run`.
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         guard UserDefaults.standard.string(forKey: key) != window else { return }
+        let token = "\(key)|\(window)"
+        guard !pending.contains(token) else { return }
+        pending.insert(token)
 
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
@@ -31,6 +43,7 @@ enum BudgetNotifier {
             }
             guard granted else {
                 Diagnostics.app.notice("notification permission denied; alert not posted")
+                Task { @MainActor in pending.remove(token) }
                 return
             }
             let content = UNMutableNotificationContent()
@@ -40,10 +53,14 @@ enum BudgetNotifier {
             center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { addError in
                 if let addError {
                     Diagnostics.app.error("notification post failed: \(addError.localizedDescription, privacy: .public)")
+                    Task { @MainActor in pending.remove(token) }
                     return
                 }
                 // Only now is the window genuinely spent.
-                UserDefaults.standard.set(window, forKey: key)
+                Task { @MainActor in
+                    UserDefaults.standard.set(window, forKey: key)
+                    pending.remove(token)
+                }
             }
         }
     }
@@ -56,6 +73,7 @@ enum BudgetNotifier {
     }
 
     /// Today's spend crossed the configured daily budget.
+    @MainActor
     static func notifyIfCrossed(todayCost: Double, budget: Double, now: Date = Date()) {
         guard budget > 0, todayCost > budget else { return }
         let day = dayKey(now)
@@ -70,6 +88,7 @@ enum BudgetNotifier {
 
     /// The current 5-hour block is nearly used up. Keyed by the block's start so
     /// each block can warn once.
+    @MainActor
     static func notifyBlockNearLimit(gauge: PlanGauge, blockStart: Date, now: Date = Date()) {
         guard gauge.limit > 0, gauge.isNearLimit, !gauge.isOverLimit else { return }
         let window = ISO8601DateFormatter().string(from: blockStart)
@@ -84,6 +103,7 @@ enum BudgetNotifier {
     }
 
     /// The rolling weekly plan allowance is nearly used up, keyed by ISO week.
+    @MainActor
     static func notifyWeeklyNearLimit(gauge: PlanGauge, now: Date = Date()) {
         guard gauge.limit > 0, gauge.isNearLimit, !gauge.isOverLimit else { return }
         var calendar = Calendar(identifier: .iso8601)

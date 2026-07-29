@@ -351,6 +351,12 @@ final class UsageStore {
 
     private func minuteTick() async {
         minuteCount += 1
+        // A watcher can start unarmed when its directory and every acceptable
+        // parent are missing (Codex never installed, say). Retry cheaply so the
+        // source goes live when it appears instead of waiting for a relaunch.
+        for watcher in watchers where !watcher.isArmed {
+            watcher.start()
+        }
         if minuteCount % 5 == 0 {
             await refreshNow() // safety net behind FSEvents
         } else {
@@ -365,12 +371,57 @@ final class UsageStore {
         colorScale = ModelColorScale(palette: stats.modelPalette)
         trackedTodayCost = trackedTodayCostNow()
         BudgetNotifier.notifyIfCrossed(todayCost: trackedTodayCost, budget: dailyBudget)
-        if let gauge = stats.blockGauge, let block = stats.block {
-            BudgetNotifier.notifyBlockNearLimit(gauge: gauge, blockStart: block.start)
+        // Alerts follow the same rule as the budget: they are standing
+        // commitments about real spend, so a transient view filter must never
+        // quiet one. `stats` is filtered by `sourceScope`; these are not.
+        let alerts = trackedPlanAlerts()
+        if let gauge = alerts.block, let start = alerts.blockStart {
+            BudgetNotifier.notifyBlockNearLimit(gauge: gauge, blockStart: start)
         }
-        if let gauge = stats.weeklyGauge {
+        if let gauge = alerts.weekly {
             BudgetNotifier.notifyWeeklyNearLimit(gauge: gauge)
         }
+    }
+
+    /// Plan allowances over every tracked source, ignoring the view filter.
+    ///
+    /// Walks the tracked digests directly rather than running a second full
+    /// `StatsBuilder.build`, which would double the cost of every rebuild.
+    private func trackedPlanAlerts() -> (block: PlanGauge?, blockStart: Date?, weekly: PlanGauge?) {
+        guard plan.tracksBlock || plan.tracksWeekly else { return (nil, nil, nil) }
+        let now = Date()
+        let nowEpoch = now.timeIntervalSince1970
+        let weekStart = nowEpoch - 7 * 86_400
+
+        var hourAll: [Int64: (TokenTotals, Double)] = [:]
+        var weekCost = 0.0
+        for digest in digests where trackedSources.contains(digest.source) {
+            for bucket in digest.buckets {
+                let cost = Pricing.cost(model: bucket.model, totals: bucket.totals)
+                if Double(bucket.hour) >= weekStart { weekCost += cost }
+                guard plan.tracksBlock else { continue }
+                var entry = hourAll[bucket.hour] ?? (TokenTotals(), 0)
+                entry.0.add(bucket.totals)
+                entry.1 += cost
+                hourAll[bucket.hour] = entry
+            }
+        }
+
+        var block: PlanGauge?
+        var blockStart: Date?
+        if plan.tracksBlock,
+           let info = StatsBuilder.currentBlock(hourAll: hourAll, nowEpoch: nowEpoch) {
+            block = PlanGauge(used: info.cost, limit: plan.blockLimit, windowEnd: info.end)
+            blockStart = info.start
+        }
+        let weekly = plan.tracksWeekly
+            ? PlanGauge(
+                used: weekCost,
+                limit: plan.weeklyLimit,
+                windowEnd: Date(timeIntervalSince1970: nowEpoch + 86_400)
+            )
+            : nil
+        return (block, blockStart, weekly)
     }
 
     /// Today's cost over all tracked sources, ignoring the view filter (the
