@@ -5,6 +5,94 @@ All notable changes to TkTracker are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-29
+
+A production-readiness pass: signed and notarizable builds, an updater, a
+diagnosable failure path, rates as data — plus the features that were sitting
+one step away from data the app already parsed.
+
+### Added
+
+- **Plan allowances**: pick a subscription in Settings → Plan and the dashboard
+  shows how much of the current 5-hour block and the rolling week it has used,
+  with a projected exhaustion time while sessions are burning. Notifications
+  fire once per block and once per week at 80%.
+  - Limits are **user-editable and off by default**. Vendors express limits in
+    messages and rolling windows, not dollars, so the presets are starting
+    points to calibrate against your own throttling — the app never shows a
+    threshold you did not set.
+- **Plan value multiple**: enter what your plan costs and the overview shows
+  trailing-30-day API-equivalent value against it (`×9.2`).
+- **Spend projection**: a "Projected today" tile derived from the share of a
+  typical day's spend that has historically landed by this hour — not a
+  burn-rate extrapolation to midnight. Silent until there are ≥5 comparable days.
+- **Branches** section: per-git-branch cost attribution, plus a branch column
+  in the sessions table and branch-aware search. Both transcript formats
+  already recorded the branch; nothing displayed it.
+- **Session duration** and **$/hour** columns, from timestamps already stored.
+- **Activity heatmap**: weekday × hour-of-day, on a sequential accent ramp
+  (deliberately not the categorical model palette).
+- **Opt-in update check** (Settings → Advanced). Off by default; makes no
+  network request of any kind until enabled, then contacts `api.github.com`
+  at most once a day and only ever shows a version and a link.
+- **Shortcuts / Spotlight** via App Intents: today's spend, spend for a range,
+  current block, open dashboard.
+- **JSON export** from the dashboard, alongside CSV.
+- **`report --watch`**: live-redrawing terminal report, restores the terminal
+  on interrupt.
+- **Diagnostics**: an `os.Logger` subsystem, a scan-health summary surfaced in
+  the UI when files can't be read or the cache can't be saved, and Settings →
+  Copy diagnostics producing a redacted report (counts, sizes, timings — never
+  paths, titles or prompts).
+- **Notarization support**: hardened runtime, an entitlements file, and
+  `make notarize` / `make verify-signature`. The release workflow signs,
+  notarizes and staples when Developer ID secrets are present and falls back to
+  ad-hoc otherwise. Homebrew cask in `Casks/tktracker.rb`.
+- **Golden corpus tests**: a committed fixture set whose expected values are
+  derived by hand from published rates (`Tests/.../Fixtures/EXPECTED.md`),
+  making the README's accuracy claim reproducible in CI. Plus tests for the
+  engine's reset/generation and dirty-flag paths, which had none.
+
+### Changed
+
+- **Cache format v3** — claim-table owner paths are interned instead of being
+  repeated in full for every message. On a real 22.6k-claim table this cut
+  `scan-cache.json` from 6.8 MB to 3.5 MB (49%). **v2 caches are migrated in
+  place, never discarded**: the history archive shares this format, and
+  dropping it would permanently downgrade pruned sessions to estimates.
+- **Rates now live in `pricing.json`** inside the bundle rather than a
+  hardcoded Swift chain, with per-model overrides in Settings → Pricing for
+  stale or negotiated rates. `PricingCatalog.builtIn` mirrors it as a fallback,
+  and a test asserts the two agree.
+- Currency and percentage formatting is locale-aware (`4,83` where that is
+  correct). Costs stay USD-denominated, since that is what the rates are.
+- Settings is now tabbed (General / Plan / Pricing / Advanced).
+
+### Fixed
+
+- **FSEvents on a missing directory**: watching a session directory that did
+  not exist yet produced a stream that never fired, leaving live updates dead
+  for that source until relaunch (only the 5-minute polling net caught it). The
+  watcher now falls back to the nearest existing ancestor and promotes itself
+  when the directory appears.
+- **Budget notifications**: the day was marked as notified *before* the
+  authorization callback resolved, so declining the first permission prompt
+  silently consumed that day's alert. The window is now marked only once the
+  notification is accepted by the system.
+- **Symlinked scan roots**: when the root path did not literally prefix the
+  enumerated file path (`/var` → `/private/var`, a symlinked
+  `CLAUDE_CONFIG_DIR`), every project name silently became the first component
+  of the absolute path. Both sides are canonicalized now.
+- **Unreadable session files** were swallowed by `try?` and showed up only as
+  lower numbers; they are now counted, logged and surfaced in the UI.
+- The history archive walked the entire claim table on every refresh — every
+  few hundred milliseconds while a session streams. It now only does so when a
+  session is actually pruned.
+- The 5-hour block scanned and sorted every hour ever recorded on each rebuild;
+  it now walks back only as far as the last gap that resets the block chain.
+- An exclusivity violation in `UsageEngine.bootstrap` (overlapping access to
+  the per-source state) that trapped at runtime under the new claim map.
+
 ## [1.4.0] - 2026-07-08
 
 ### Added
