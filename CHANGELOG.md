@@ -5,6 +5,29 @@ All notable changes to TkTracker are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-08-03
+
+### Fixed
+
+- **Withdrawn: the Shortcuts claim from 1.5.0.** The App Intents were
+  implemented and compile, but they never register, so no shortcut, Spotlight
+  result or Siri phrase was ever available. Discovery requires a
+  `Metadata.appintents` bundle generated at build time by Xcode's
+  `appintentsmetadataprocessor`; SwiftPM does not run it, and the tool is not
+  present in a Command-Line-Tools-only install. Confirmed on both a local
+  `make install` build and the published 1.5.0 artifact — neither contains the
+  bundle — and the app logs
+  `Error registering app with intents framework … Code=4097` at launch.
+
+  Nothing else in 1.5.0 is affected; this is an isolated feature that silently
+  did nothing. The code is kept, unregistered and clearly marked, so it works
+  the day the build can produce the metadata (see `docs/app-intents.md`).
+
+  `--selfcheck` now reports App Intents availability explicitly, and `make app`
+  prints it, so the gap is visible on every build instead of only in a log
+  nobody reads. It is a warning rather than a build failure, because on this
+  toolchain it can never be satisfied.
+
 ## [1.5.0] - 2026-07-29
 
 A production-readiness pass: signed and notarizable builds, an updater, a
@@ -35,8 +58,10 @@ one step away from data the app already parsed.
 - **Opt-in update check** (Settings → Advanced). Off by default; makes no
   network request of any kind until enabled, then contacts `api.github.com`
   at most once a day and only ever shows a version and a link.
-- **Shortcuts / Spotlight** via App Intents: today's spend, spend for a range,
-  current block, open dashboard.
+- ~~**Shortcuts / Spotlight** via App Intents: today's spend, spend for a range,
+  current block, open dashboard.~~ **This did not work in 1.5.0** and the claim
+  was withdrawn in 1.5.1 — the intents are implemented but never register. See
+  below.
 - **JSON export** from the dashboard, alongside CSV.
 - **`report --watch`**: live-redrawing terminal report, restores the terminal
   on interrupt.

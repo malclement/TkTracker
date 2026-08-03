@@ -16,7 +16,7 @@
 # catch a substitution either. `:no_check` is only defensible for a
 # `version :latest` cask where no stable digest exists.
 cask "tktracker" do
-  version "1.5.0"
+  version "1.5.1"
   # Placeholder: replace with the real digest before this file goes into a tap.
   # Left as an obviously-invalid value rather than `:no_check` so an unfinished
   # cask fails loudly instead of installing unverified bytes.

@@ -59,6 +59,22 @@ enum SelfCheck {
             failures.append("Localizable.strings not reachable from this bundle")
         }
 
+        // App Intents are compiled in but only *discoverable* when the bundle
+        // carries Metadata.appintents, which Xcode's appintentsmetadataprocessor
+        // generates and SwiftPM does not. 1.5.0 shipped documenting Shortcuts
+        // support that had never registered, so this is reported on every build.
+        //
+        // Deliberately not a failure: on a Command-Line-Tools toolchain the
+        // condition can never be satisfied, and a build that cannot pass its own
+        // gate teaches people to ignore the gate.
+        let metadata = Bundle.main.bundleURL.appendingPathComponent("Contents/Metadata.appintents")
+        if FileManager.default.fileExists(atPath: metadata.path) {
+            print("appintents   registered")
+        } else {
+            print("appintents   INERT — no Metadata.appintents, Shortcuts will not register")
+            print("             (expected on a SwiftPM build; do not document Shortcuts support)")
+        }
+
         guard failures.isEmpty else {
             for failure in failures {
                 FileHandle.standardError.write(Data("selfcheck: \(failure)\n".utf8))
