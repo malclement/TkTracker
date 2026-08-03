@@ -1,7 +1,7 @@
 /// Single source of truth for the CLI's version report. Must match
 /// `CFBundleShortVersionString` in Support/Info.plist — a unit test enforces it.
 enum AppVersion {
-    static let current = "1.5.0"
+    static let current = "1.5.1"
 
     /// Semantic-version comparison for the update check. Missing components read
     /// as 0 ("1.5" == "1.5.0"), and anything non-numeric compares as 0 rather

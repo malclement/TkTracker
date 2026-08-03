@@ -58,9 +58,13 @@ breakdowns. Everything stays on your Mac.
   terminal, sharing the app's scan caches; `--watch` redraws live.
   `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored for non-default data
   locations.
-- **Shortcuts** — App Intents for today's spend, spend over a range, the
-  current 5-hour block, and opening the dashboard. They read the same caches,
-  so a shortcut and the popover can never disagree.
+- **Shortcuts** — *not currently available.* App Intents for today's spend,
+  spend over a range, the current 5-hour block and opening the dashboard are
+  implemented, but they do not register: discovery needs a `Metadata.appintents`
+  bundle produced by Xcode's `appintentsmetadataprocessor`, which SwiftPM does
+  not run. 1.5.0 shipped claiming otherwise; see
+  [issue tracking](https://github.com/malclement/TkTracker/issues) if you want
+  this.
 - **Accurate accounting**
   - deduplicates multi-line assistant turns by `(messageId, requestId)`
   - a global claim table keeps usage counted **exactly once** even when session
@@ -231,7 +235,8 @@ Sources/TkTracker
 │   ├── Diagnostics.swift    os.Logger subsystems and the redacted self-report
 │   └── ProjectsWatcher.swift  FSEvents on ~/.claude/projects & ~/.codex/sessions
 ├── App / UI                 SwiftUI: MenuBarExtra, dashboard, Swift Charts,
-│                            App Intents, opt-in update check
+│                            opt-in update check (App Intents present but
+│                            inert — see Shortcuts above)
 └── CLI                      terminal report (+ --watch)
 ```
 
