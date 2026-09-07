@@ -13,9 +13,13 @@ Release candidate: 2.0.0. Production publication requires every gate below.
    `MACOS_CERTIFICATE_PASSWORD`, `MACOS_KEYCHAIN_PASSWORD`, `APPLE_ID`,
    `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. The certificate must be a Developer
    ID Application identity. Secrets are never committed.
-5. Tag the validated commit `v2.0.0`. The release workflow signs, notarizes,
+5. Run the Release workflow manually on the candidate commit (`gh workflow run
+   release.yml --ref <candidate-ref>`). It signs, notarizes and uploads a
+   `TkTracker-signed-candidate` artifact without creating a public release.
+   Download it and execute all four actions in Shortcuts. Record the tested commit.
+6. Tag that validated commit `v2.0.0`. The release workflow signs, notarizes,
    staples and runs strict Gatekeeper/signature checks before publication.
-6. Update the Homebrew cask to the published ZIP's SHA-256, and verify the
+7. Update the Homebrew cask to the published ZIP's SHA-256, and verify the
    downloaded app's version, resources, signature and staple.
 
 As of September 7, 2026 the repository has no release signing secrets configured.

@@ -3,15 +3,16 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Build & publish release
+    name: Build signed candidate or release
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
@@ -20,7 +21,11 @@ jobs:
       - name: Run tests
         run: swift test
 
+      - name: Check generated pricing catalog
+        run: python3 Scripts/generate_pricing.py --check
+
       - name: Check tag matches bundle version
+        if: github.event_name == 'push'
         run: |
           VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Support/Info.plist)
           if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
@@ -91,6 +96,14 @@ jobs:
           # than be published with a false claim.
           make verify-signature-strict smoke
 
+      - name: Upload signed candidate
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v5
+        with:
+          name: TkTracker-signed-candidate
+          path: dist/TkTracker-*.zip
+          if-no-files-found: error
+
       # Runs even when the build fails: otherwise the Developer ID private key
       # and its keychain password outlive the job on a self-hosted or reused
       # runner.
@@ -102,9 +115,9 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12" || true
 
       - name: Create GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-          NOTARIZED: ${{ steps.signing.outputs.enabled }}
         # Notes are assembled into a file rather than an inline --notes argument.
         # A multi-line shell string inside a YAML block scalar has to keep every
         # continuation line indented past the block marker; getting that wrong
@@ -118,19 +131,8 @@ jobs:
           echo "sha256: $DIGEST"
           NOTES="$RUNNER_TEMP/release-notes.md"
           {
-            if [ "$NOTARIZED" = "true" ]; then
-              echo '> [!NOTE]'
-              echo '> Signed with a Developer ID and notarized by Apple — open it normally,'
-              echo '> no quarantine step needed.'
-            else
-              echo '> [!WARNING]'
-              echo '> This build is ad-hoc signed and **not notarized**. After unzipping and'
-              echo '> moving `TkTracker.app` to `/Applications`, clear the quarantine flag once:'
-              echo '>'
-              echo '> `xattr -dr com.apple.quarantine /Applications/TkTracker.app`'
-              echo '>'
-              echo '> — or build from source with `make install`.'
-            fi
+            echo '> [!NOTE]'
+            echo '> Signed with a Developer ID and notarized by Apple — open it normally.'
             echo
             echo '<details><summary>Homebrew cask checksum</summary>'
             echo
