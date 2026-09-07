@@ -15,4 +15,4 @@ Scope approved September 7, 2026. Implementation branch: `feat/production-ready-
 
 Accounting changes preserve existing archives. Missing request metadata remains explicitly approximate; missing prices never become zero-cost claims. Network-backed quota reads are opt-in. No third-party runtime dependencies.
 
-Native dashboard, account/pricing/budget/privacy settings and session charts/simulation were inspected. Local tests: 147 passing. Local packaged resource and synthetic accounting smoke checks pass. Universal Xcode packaging remains under validation. Signing credentials are absent both locally and in GitHub; no production tag or release has been published.
+Native dashboard, account/pricing/budget/privacy settings and session charts/simulation were inspected. Local tests: 148 passing. Local optimized compilation completes in 24 seconds; packaged resource and synthetic accounting smoke checks pass. Universal Xcode packaging remains under validation. Signing credentials are absent both locally and in GitHub; no production tag or release has been published.

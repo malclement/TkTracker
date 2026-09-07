@@ -28,10 +28,8 @@ jobs:
             exit 1
           fi
 
-      # Signing is optional so the workflow still produces an artifact on forks
-      # and before the Developer ID is configured. With the secrets present the
-      # release is Developer ID signed, notarized and stapled; without them it
-      # falls back to ad-hoc and the release notes say so.
+      # Public releases require verified signing and notarization. Unsigned
+      # development candidates remain available through ordinary CI artifacts.
       - name: Detect signing capability
         id: signing
         env:

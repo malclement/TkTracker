@@ -275,3 +275,20 @@ struct CustomReportPresentationTests {
         #expect(window.label == "7-day window")
     }
 }
+
+@Suite("Archive metadata revisions")
+struct ArchiveMetadataRevisionTests {
+    @Test func requestMetadataChangeUpdatesArchiveWithoutChangingHourlyTotals() throws {
+        var d = FileDigest(path: "/archived", sessionId: "archived", projectDir: "project")
+        d.missing = true
+        let hour = HourBucket(hour: 1_800_000_000, model: "gpt-6-astra", totals: TokenTotals(input: 10_000, messages: 1))
+        d.buckets = [hour]; d.records = [hour]
+        let archive = DigestCache(version: 2, digests: [d.path: d], claims: ClaimMap())
+        #expect(HistoryArchive.updated(archive, digests: [d.path: d], claims: ClaimMap()) == nil)
+        d.records?[0].context = PricingContext(tier: .fast)
+        let updated = try #require(HistoryArchive.updated(archive, digests: [d.path: d], claims: ClaimMap()))
+        #expect(updated.digests[d.path]?.buckets == archive.digests[d.path]?.buckets)
+        #expect(updated.digests[d.path]?.records?.first?.context?.tier == .fast)
+        #expect(updated.digests[d.path]?.cost == 0.2)
+    }
+}

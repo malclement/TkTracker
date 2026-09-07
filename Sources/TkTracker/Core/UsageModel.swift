@@ -16,6 +16,9 @@ struct TokenTotals: Codable, Sendable, Equatable {
     }
     var isEmpty: Bool { total == 0 && messages == 0 && webSearches == 0 }
 
+    // Keep seven overflow checks outside callers' aggregation loops. Inlining
+    // this body makes Swift's LICM alias analysis stall in FileDigest.totals.
+    @inline(never)
     mutating func add(_ other: TokenTotals) {
         input = input.saturatingAdding(other.input)
         output = output.saturatingAdding(other.output)
