@@ -434,7 +434,7 @@ struct ModelsView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
-                Text("Costs are estimated from Anthropic and OpenAI list prices per model (Claude: cache reads 0.1×, 5m writes 1.25×, 1h writes 2× input, web search $10 per 1K requests; OpenAI: cached input 0.1×, no cache-write charge). Subscription plans bill differently — treat these as API-equivalent value.")
+                Text("API-equivalent estimates use the bundled model, cache, service-tier and context rates. Missing tiers assume standard rates; unpriced usage makes totals partial. Subscription payments and observed provider quotas are separate. Review or override rates in Settings → Pricing.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)

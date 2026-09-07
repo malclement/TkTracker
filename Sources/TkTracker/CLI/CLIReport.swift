@@ -430,7 +430,7 @@ enum CLIReport {
 
     private static func printReport(digests: [FileDigest], focus: StatsRange?, filter: ReportFilter = ReportFilter()) {
         let now = Date()
-        let ranges: [StatsRange] = focus.map { [$0] } ?? [.today, .week, .month, .all]
+        let ranges: [StatsRange] = filter.interval(now: now, calendar: .current) != nil ? [focus ?? .all] : (focus.map { [$0] } ?? [.today, .week, .month, .all])
         let stats = ranges.map { StatsBuilder.build(digests: digests, range: $0, now: now, filter: filter, profiles: SourceProfile.load()) }
 
         let present = Set(digests.map(\.source))
@@ -448,7 +448,7 @@ enum CLIReport {
         for s in stats {
             let t = s.totals
             let cache = "\(Format.tokens(t.cacheRead)) / \(Format.tokens(t.cacheWrite))"
-            print("  " + s.range.label.padded(10)
+            print("  " + s.rangeLabel.padded(10)
                 + Format.money(s.cost).padded(11)
                 + Format.tokens(t.total).padded(10)
                 + Format.tokens(t.input).padded(9)
@@ -477,7 +477,7 @@ enum CLIReport {
             return (source.displayName, totals, reference.cost(for: source))
         }
         if sourceLines.count > 1 {
-            print("\n  By source — \(reference.range.label.lowercased())")
+            print("\n  By source — \(reference.rangeLabel.lowercased())")
             for (name, totals, cost) in sourceLines {
                 print("    " + name.padded(14) + Format.money(cost).padded(11)
                     + Format.tokens(totals.total).padded(10) + "\(totals.messages) msgs")
@@ -485,7 +485,7 @@ enum CLIReport {
         }
 
         if !reference.models.isEmpty {
-            print("\n  By model — \(reference.range.label.lowercased())")
+            print("\n  By model — \(reference.rangeLabel.lowercased())")
             for m in reference.models.prefix(8) {
                 let flag = m.hasPricing ? "" : "  (no pricing)"
                 print("    " + m.shortName.padded(14) + Format.money(m.cost).padded(11)
@@ -494,7 +494,7 @@ enum CLIReport {
         }
 
         if !reference.projects.isEmpty {
-            print("\n  By project — \(reference.range.label.lowercased()) (top 8)")
+            print("\n  By project — \(reference.rangeLabel.lowercased()) (top 8)")
             for p in reference.projects.prefix(8) {
                 print("    " + String(p.name.prefix(22)).padded(24) + Format.money(p.cost).padded(11)
                     + Format.tokens(p.totals.total).padded(10)
@@ -504,7 +504,7 @@ enum CLIReport {
 
         if reference.cacheSavings > 0.01 {
             print("\n  Prompt cache: \(Format.percent(reference.cacheHitRate)) of prompt tokens served from cache, "
-                + "saving ≈\(Format.money(reference.cacheSavings)) (\(reference.range.label.lowercased()))")
+                + "saving ≈\(Format.money(reference.cacheSavings)) (\(reference.rangeLabel.lowercased()))")
         }
 
         if let since = reference.dataSince {

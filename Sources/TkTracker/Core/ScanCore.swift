@@ -231,9 +231,12 @@ struct ScanCore: Sendable {
         var scanned = [FileDigest?](repeating: nil, count: readable.count)
         scanned.withUnsafeMutableBufferPointer { buffer in
             let base = buffer.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: readable.count) { i in
-                let meta = readable[i]
-                base[i] = source.adapter.scan(meta, previous: digests[meta.url.path], claims: claimTable)
+            let workers = min(4, readable.count)
+            DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                for i in stride(from: worker, to: readable.count, by: workers) {
+                    let meta = readable[i]
+                    base[i] = source.adapter.scan(meta, previous: digests[meta.url.path], claims: claimTable)
+                }
             }
         }
         for digest in scanned {

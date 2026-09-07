@@ -255,3 +255,23 @@ struct ProfileHistoryTests {
         #expect(SourceProfile.unique([outer,inner]).count == 1)
     }
 }
+
+@Suite("Custom report presentation")
+struct CustomReportPresentationTests {
+    @Test func customDatesOverrideTodayPresentationAndAreExported() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let filter = ReportFilter(start: now.addingTimeInterval(-7 * 86400), end: now)
+        let stats = StatsBuilder.build(digests: [], range: .today, now: now, filter: filter)
+        #expect(!stats.isTodayView)
+        #expect(stats.chartUnit == .day)
+        #expect(stats.rangeLabel != "Today")
+        let encoded = try stats.jsonDocument()
+        let decoded = try JSONDecoder().decode(DashboardStats.self, from: JSONEncoder().encode(stats))
+        #expect(encoded.contains("reportFilter"))
+        #expect(decoded.reportFilter?.start == filter.start)
+    }
+    @Test func quotaLabelDescribesActualWindowLength() {
+        let window = QuotaWindow(name: "codex · primary", usedPercent: 12, durationMinutes: 10080, resetsAt: Date())
+        #expect(window.label == "7-day window")
+    }
+}

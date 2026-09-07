@@ -116,7 +116,7 @@ struct FilterBar: View {
     var body: some View {
         HStack(spacing: 10) {
             RangePicker()
-            Button { showingFilters.toggle() } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+            Button { showingFilters.toggle() } label: { Label(store.reportFilter.start != nil || store.reportFilter.calendarMonth ? "Custom" : "Filter", systemImage: "line.3.horizontal.decrease.circle") }
                 .help("Custom dates, project/model filters and saved views")
                 .popover(isPresented: $showingFilters) { ReportFilterView().environment(store) }
             if store.showsSourceScope {
@@ -217,7 +217,7 @@ struct OverviewView: View {
                 value: Format.money(stats.cost),
                 icon: "dollarsign.circle",
                 sub: spendSub(stats),
-                delta: stats.range == .today ? stats.todayVsYesterday : nil,
+                delta: stats.isTodayView ? stats.todayVsYesterday : nil,
                 deltaLabel: "vs yesterday by now"
             )
             secondTile(stats)
@@ -233,7 +233,7 @@ struct OverviewView: View {
 
     @ViewBuilder
     private func secondTile(_ stats: DashboardStats) -> some View {
-        if stats.range == .today, let projected = stats.projectedTodayCost {
+        if stats.isTodayView, let projected = stats.projectedTodayCost {
             StatTile(
                 label: "Projected today",
                 value: Format.money(projected),
@@ -318,7 +318,7 @@ struct OverviewView: View {
     }
 
     private func spendSub(_ stats: DashboardStats) -> String? {
-        guard stats.range == .today else { return stats.range.label.lowercased() }
+        guard stats.isTodayView else { return stats.rangeLabel.lowercased() }
         return stats.todayVsYesterday == nil ? "since midnight" : nil
     }
 

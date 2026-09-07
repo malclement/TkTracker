@@ -6,6 +6,11 @@ struct QuotaWindow: Codable, Sendable, Equatable, Identifiable {
     var durationMinutes: Int
     var resetsAt: Date
     var id: String { name }
+    var label: String {
+        let duration = durationMinutes % 1440 == 0 ? "\(durationMinutes / 1440)-day" : (durationMinutes % 60 == 0 ? "\(durationMinutes / 60)-hour" : "\(durationMinutes)-minute")
+        let group = name.components(separatedBy: " · ").first ?? ""
+        return (group == "codex" ? "" : group + " · ") + duration + " window"
+    }
     var remainingPercent: Double { max(0, 100 - usedPercent) }
 }
 

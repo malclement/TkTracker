@@ -10,12 +10,11 @@ import Foundation
 /// never replay another file's token events), and unlike the cumulative
 /// `total_token_usage` it is immune to the rebase that compaction applies.
 /// `cached_input_tokens` is the cached subset of `input_tokens`, so input is
-/// split into uncached input + cache reads; OpenAI bills no cache writes.
+/// split into uncached input, cache reads and any explicitly reported cache writes.
 ///
 /// The model comes from the most recent `turn_context` line (it can change
 /// mid-session). The rare usage seen before any turn context is held back and
-/// attributed to the first model the file declares — or to "gpt-5" if the file
-/// never names one, so a handful of tokens still price at the family rate.
+/// attributed to the first model the file declares — or left unpriced if the file never names one.
 enum CodexParser {
     private static let usageNeedle = Data("\"token_count\"".utf8)
     private static let metaNeedle = Data("\"session_meta\"".utf8)

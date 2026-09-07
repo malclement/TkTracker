@@ -207,6 +207,15 @@ struct DashboardStats: Codable, Sendable {
     /// Today's cost split by usage source.
     var todayCostBySource: [String: Double]
 
+    var reportFilter: ReportFilter?
+    var isTodayView: Bool { range == .today && reportFilter?.start == nil && reportFilter?.calendarMonth != true }
+    var rangeLabel: String {
+        if reportFilter?.calendarMonth == true { return "This calendar month" }
+        if let start = reportFilter?.start, let end = reportFilter?.end {
+            return start.formatted(date: .abbreviated, time: .omitted) + " – " + end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted)
+        }
+        return range.label
+    }
     var coverage = PricingCoverage()
     var previousPeriodCost: Double?
     var accounts: [AccountUsage] = []
@@ -268,12 +277,12 @@ enum StatsBuilder {
         let todayStart = calendar.startOfDay(for: now).timeIntervalSince1970
 
         let chartUnit: ChartUnit
-        if range == .today {
+        if (interval == nil && range == .today) || (interval.map { $0.duration <= 86400 } ?? false) {
             chartUnit = .hour
         } else {
             // Buckets are sorted per digest, so the first one is each file's earliest.
             let earliest = digests.compactMap { $0.buckets.first?.hour }.min().map(Double.init)
-            let spanDays = (nowEpoch - (rangeStart ?? earliest ?? nowEpoch)) / 86_400
+            let spanDays = (rangeEnd - (rangeStart ?? earliest ?? nowEpoch)) / 86_400
             chartUnit = spanDays > 120 ? .week : .day
         }
 
@@ -654,6 +663,7 @@ enum StatsBuilder {
             totalsBySource: totalsBySource,
             todayCostBySource: todayCostBySource
         )
+        result.reportFilter = filter
         result.accounts = AccountUsage.build(profiles: profiles, digests: digests, now: now)
         result.coverage = coverage
         result.previousPeriodCost = rangeStart == nil ? nil : previousCost

@@ -8,6 +8,7 @@ struct ReportFilterView: View {
         Form {
             Text("Filter & compare").font(.headline)
             Toggle("Current calendar month", isOn: $store.reportFilter.calendarMonth)
+                .onChange(of: store.reportFilter.calendarMonth) { _, value in if value { customDates = false } }
             Toggle("Custom dates", isOn: $customDates)
                 .onChange(of: customDates) { _, value in
                     if value {

@@ -89,7 +89,7 @@ struct AccountsCard: View {
                     if let quota = store.quotaSnapshots[account.id], !quota.windows.isEmpty {
                         ForEach(quota.windows) { window in
                             HStack {
-                                Text(window.name).font(.caption)
+                                Text(window.label).font(.caption)
                                 ProgressView(value: window.usedPercent, total: 100).frame(maxWidth: 170)
                                 Text("\(Int(window.remainingPercent))% left").monospacedDigit()
                                 Text(window.resetsAt > Date() ? "Resets " + window.resetsAt.formatted(date: .abbreviated, time: .shortened) : "Reset passed — refresh needed").font(.caption).foregroundStyle(.secondary)

@@ -30,6 +30,8 @@ enum Main {
                   blends in estimated pre-cleanup history from Claude Code's
                   stats cache; --transcripts-only restricts it to exact
                   transcript data. --watch redraws every 3s until interrupted.
+              --dashboard
+                  Open the dashboard on launch.
               --version
                   Print the version and exit.
 

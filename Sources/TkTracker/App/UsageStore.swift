@@ -30,7 +30,9 @@ final class UsageStore {
     var range: StatsRange {
         didSet {
             UserDefaults.standard.set(range.rawValue, forKey: "range")
-            rebuild()
+            var filter = reportFilter
+            filter.start = nil; filter.end = nil; filter.calendarMonth = false
+            if filter != reportFilter { reportFilter = filter } else { rebuild() }
         }
     }
 

@@ -237,8 +237,8 @@ private struct PricingSettings: View {
                     ?? PricingOverride(input: current?.input ?? 0, output: current?.output ?? 0)
                 guard newValue.isFinite, newValue >= 0, newValue <= 1_000_000 else { return }
                 staged[keyPath: keyPath] = newValue
-                editing[name] = staged
                 PricingCatalog.shared.setOverride(staged, forShortName: name)
+                if PricingCatalog.shared.lastError == nil { editing[name] = staged }
                 store.operationError = PricingCatalog.shared.lastError
                 store.refreshDerived()
             }
