@@ -3,7 +3,7 @@
 Release candidate: 2.0.0. Production publication requires every gate below.
 
 1. `python3 Scripts/generate_pricing.py --check` and `make test` pass.
-2. `make zip smoke APP_BUILDER=xcode` builds both Apple Silicon and Intel,
+2. CI pins Xcode 26.3 on macOS 15. `make zip smoke APP_BUILDER=xcode` builds both Apple Silicon and Intel,
    validates bundled resources and extracts all four App Intents.
 3. Inspect dashboard filters, accounts, budgets, pricing controls and a session
    detail sheet in the native app. Check the actions in macOS Shortcuts after
