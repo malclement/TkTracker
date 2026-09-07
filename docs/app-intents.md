@@ -17,6 +17,13 @@ this limitation. Metadata presence alone is not proof of runtime discovery:
 a release candidate must also be launched on macOS and its actions checked in
 the Shortcuts app before claiming end-to-end Shortcuts validation.
 
+The app refreshes its shortcut parameters at startup, following Apple's
+[App Intents sample](https://developer.apple.com/documentation/appintents/acceleratingappinteractionswithappintents/).
+In September 2026 validation, the universal candidate's metadata passed and the
+spending actions appeared in Shortcuts. Execution of an ad-hoc preview was
+rejected by macOS because it lacked a signing team ID. Final runtime acceptance
+requires the Developer ID-signed candidate; metadata checks cannot replace it.
+
 ```sh
 make zip smoke APP_BUILDER=xcode
 make verify-appintents

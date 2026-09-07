@@ -15,9 +15,9 @@
 	     memory, no disabled library validation, no DYLD overrides. The hardened
 	     runtime's defaults all apply. -->
 
-	<!-- The opt-in update check (Settings -> Advanced) contacts api.github.com.
-	     Nothing else in the app opens a socket, and with that setting off — its
-	     default — no request is ever made. -->
+	<!-- The opt-in update check contacts api.github.com. Optional account quota
+	     refresh delegates authentication and transport to the installed Codex CLI.
+	     Both features are disabled by default. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
 </dict>

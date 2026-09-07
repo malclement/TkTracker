@@ -1,8 +1,13 @@
 import SwiftUI
 import AppKit
+import AppIntents
 
 struct TkTrackerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    init() {
+        TkTrackerShortcuts.updateAppShortcutParameters()
+    }
 
     var body: some Scene {
         MenuBarExtra {

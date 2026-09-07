@@ -19,9 +19,16 @@ Release candidate: 2.0.0. Production publication requires every gate below.
    downloaded app's version, resources, signature and staple.
 
 As of September 7, 2026 the repository has no release signing secrets configured.
-The local machine has Command Line Tools, so Xcode metadata validation must run
-in GitHub CI. An ad-hoc candidate is suitable for development validation; it is
-not a completed production release.
+The local machine has Command Line Tools; universal Xcode packaging and metadata
+validation passed in [CI run 34133011977](https://github.com/malclement/TkTracker/actions/runs/34133011977).
+The downloaded artifact passed local resource, architecture, signature integrity
+and synthetic accounting checks. All 148 regression tests pass.
+
+Shortcuts discovers the spending actions in a separate preview identity, but
+execution fails. System diagnostics report `Unable to get teamId` and
+`Rejecting invalid client due to requiresValidatedBundle` for the ad-hoc app.
+Repeat execution of all four actions on the final Developer ID-signed candidate.
+An ad-hoc candidate is not a completed production release.
 
 ## Accounting compatibility
 
