@@ -1,8 +1,13 @@
 import SwiftUI
 import AppKit
+import AppIntents
 
 struct TkTrackerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    init() {
+        TkTrackerShortcuts.updateAppShortcutParameters()
+    }
 
     var body: some Scene {
         MenuBarExtra {
@@ -19,7 +24,7 @@ struct TkTrackerApp: App {
                 .frame(minWidth: 940, minHeight: 580)
         }
         .defaultSize(width: 1080, height: 680)
-        .defaultLaunchBehavior(.suppressed)
+        .defaultLaunchBehavior(CommandLine.arguments.contains("--dashboard") || Bundle.main.bundleIdentifier?.hasSuffix(".preview") == true ? .presented : .suppressed)
         .restorationBehavior(.disabled)
 
         Settings {

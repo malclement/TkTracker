@@ -221,12 +221,21 @@ struct SessionsView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
                     }
                 }
+                Button("Session details") { store.selectedSession = row.path }
                 Button("Copy Resume Command") {
                     copyToPasteboard(row.source.resumeCommand(sessionId: row.sessionId))
                 }
                 Button("Copy Session ID") {
                     copyToPasteboard(row.sessionId)
                 }
+            }
+        } primaryAction: { ids in
+            store.selectedSession = rows.first { ids.contains($0.id) }?.path
+        }
+        .onChange(of: selection) { _, _ in }
+        .sheet(isPresented: Binding(get: { store.selectedSession != nil }, set: { if !$0 { store.selectedSession = nil } })) {
+            if let digest = store.allDigests.first(where: { $0.path == store.selectedSession }) {
+                SessionDetailView(digest: digest, allDigests: store.allDigests)
             }
         }
         .overlay {
@@ -425,7 +434,7 @@ struct ModelsView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
-                Text("Costs are estimated from Anthropic and OpenAI list prices per model (Claude: cache reads 0.1×, 5m writes 1.25×, 1h writes 2× input, web search $10 per 1K requests; OpenAI: cached input 0.1×, no cache-write charge). Subscription plans bill differently — treat these as API-equivalent value.")
+                Text("API-equivalent estimates use the bundled model, cache, service-tier and context rates. Missing tiers assume standard rates; unpriced usage makes totals partial. Subscription payments and observed provider quotas are separate. Review or override rates in Settings → Pricing.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)

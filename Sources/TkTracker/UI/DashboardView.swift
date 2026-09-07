@@ -49,6 +49,9 @@ struct DashboardView: View {
             case .models: ModelsView()
             }
         }
+        .alert("TkTracker", isPresented: Binding(get: { store.operationError != nil }, set: { if !$0 { store.operationError = nil } })) {
+            Button("OK") { store.operationError = nil }
+        } message: { Text(store.operationError ?? "") }
         .onAppear { WindowFocus.promote() }
         .onDisappear { WindowFocus.demoteIfNoWindows() }
     }
@@ -107,11 +110,15 @@ struct SourceScopePicker: View {
 /// Shared toolbar content: the time range plus, when more than one source is
 /// tracked, the source lens.
 struct FilterBar: View {
+    @State private var showingFilters = false
     @Environment(UsageStore.self) private var store
 
     var body: some View {
         HStack(spacing: 10) {
             RangePicker()
+            Button { showingFilters.toggle() } label: { Label(store.reportFilter.start != nil || store.reportFilter.calendarMonth ? "Custom" : "Filter", systemImage: "line.3.horizontal.decrease.circle") }
+                .help("Custom dates, project/model filters and saved views")
+                .popover(isPresented: $showingFilters) { ReportFilterView().environment(store) }
             if store.showsSourceScope {
                 SourceScopePicker()
             }
@@ -140,6 +147,16 @@ struct OverviewView: View {
                 banners
 
                 tiles(stats)
+                if !stats.coverage.note.isEmpty {
+                    Text(stats.coverage.note).font(.caption).foregroundStyle(stats.coverage.isIncomplete ? .orange : .secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading).card()
+                }
+                if let previous = stats.previousPeriodCost {
+                    Text("Previous comparable period: \(Format.money(previous)) · Change: \(Format.money(stats.cost - previous))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                AccountsCard()
+                BudgetsCard()
 
                 if stats.blockGauge != nil || stats.weeklyGauge != nil {
                     allowanceCard(stats)
@@ -196,11 +213,11 @@ struct OverviewView: View {
     private func tiles(_ stats: DashboardStats) -> some View {
         HStack(alignment: .top, spacing: 12) {
             StatTile(
-                label: "Spend",
+                label: stats.coverage.isIncomplete ? "API value (partial)" : "API-equivalent value",
                 value: Format.money(stats.cost),
                 icon: "dollarsign.circle",
                 sub: spendSub(stats),
-                delta: stats.range == .today ? stats.todayVsYesterday : nil,
+                delta: stats.isTodayView ? stats.todayVsYesterday : nil,
                 deltaLabel: "vs yesterday by now"
             )
             secondTile(stats)
@@ -216,7 +233,7 @@ struct OverviewView: View {
 
     @ViewBuilder
     private func secondTile(_ stats: DashboardStats) -> some View {
-        if stats.range == .today, let projected = stats.projectedTodayCost {
+        if stats.isTodayView, let projected = stats.projectedTodayCost {
             StatTile(
                 label: "Projected today",
                 value: Format.money(projected),
@@ -301,7 +318,7 @@ struct OverviewView: View {
     }
 
     private func spendSub(_ stats: DashboardStats) -> String? {
-        guard stats.range == .today else { return stats.range.label.lowercased() }
+        guard stats.isTodayView else { return stats.rangeLabel.lowercased() }
         return stats.todayVsYesterday == nil ? "since midnight" : nil
     }
 

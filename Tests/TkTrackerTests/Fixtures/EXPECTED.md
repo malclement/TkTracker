@@ -67,29 +67,29 @@ times. Only `m3` is new.
 
 The rollout reports `input_tokens: 1,000,000` with `cached_input_tokens:
 500,000`. Codex's `input_tokens` is inclusive of the cached portion, so the
-parser splits it: 500,000 fresh input and 500,000 cache reads.
+parser splits it: 500,000 fresh input and 500,000 cache reads. The prompt exceeds 272K, so the full request uses 2× input/cache and 1.5× output rates per the [OpenAI pricing documentation](https://developers.openai.com/api/docs/pricing).
 
 | Component | Tokens | Rate | Cost |
 |---|---|---|---|
-| input (fresh) | 500,000 | 5 | 2.50 |
-| cached input | 500,000 | 0.5 | 0.25 |
-| output | 1,000,000 | 30 | 30.00 |
-| **total** | **2,000,000** | | **32.75** |
+| input (fresh) | 500,000 | 10 | 5.00 |
+| cached input | 500,000 | 1 | 0.50 |
+| output | 1,000,000 | 45 | 45.00 |
+| **total** | **2,000,000** | | **50.50** |
 
-**Codex total: 2,000,000 tokens, 1 message, $32.75**
+**Codex total: 2,000,000 tokens, 1 message, $50.50**
 
 ## Grand total
 
 | | Tokens | Messages | Cost |
 |---|---|---|---|
 | Claude | 8,000,000 | 3 | 65.75 |
-| Codex | 2,000,000 | 1 | 32.75 |
-| **All** | **10,000,000** | **4** | **98.50** |
+| Codex | 2,000,000 | 1 | 50.50 |
+| **All** | **10,000,000** | **4** | **116.25** |
 
 ## Other properties the corpus pins
 
 - **Branches.** `s1` is on `main`, `s2` on `feature/golden`. Branch attribution
-  follows the digest's last-seen branch, so the two sessions land on different
+  follows each request's observed branch, so the two sessions land on different
   branch rows within one project.
 - **Project merge.** All three files record `cwd = /Users/x/Documents/golden`,
   and the Codex rollout encodes the same cwd into its project dir, so Claude and

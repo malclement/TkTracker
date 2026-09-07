@@ -15,6 +15,7 @@ struct ScanCore: Sendable {
     var source: UsageSource = .claude
     let root: URL
     let cacheURL: URL
+    var profileId: String?
 
     /// Claude Code's data directory: `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
     /// Everything that locates Claude Code data (transcripts, stats cache) must
@@ -200,7 +201,7 @@ struct ScanCore: Sendable {
         let work = files
             .filter { meta in
                 guard let d = result[meta.url.path] else { return true }
-                return d.missing || d.size != meta.size || abs(d.mtime - meta.mtime) > 0.0005
+                return d.parserRevision != 2 || d.missing || d.size != meta.size || abs(d.mtime - meta.mtime) > 0.0005
             }
             .sorted { $0.mtime < $1.mtime }
 
@@ -230,30 +231,18 @@ struct ScanCore: Sendable {
         var scanned = [FileDigest?](repeating: nil, count: readable.count)
         scanned.withUnsafeMutableBufferPointer { buffer in
             let base = buffer.baseAddress!
-            DispatchQueue.concurrentPerform(iterations: readable.count) { i in
-                let meta = readable[i]
-                switch source {
-                case .claude:
-                    base[i] = JSONLParser.scan(
-                        url: meta.url,
-                        previous: digests[meta.url.path],
-                        projectDir: meta.projectDir,
-                        size: meta.size,
-                        mtime: meta.mtime,
-                        claims: claimTable
-                    )
-                case .codex:
-                    base[i] = CodexParser.scan(
-                        url: meta.url,
-                        previous: digests[meta.url.path],
-                        size: meta.size,
-                        mtime: meta.mtime
-                    )
+            let workers = min(4, readable.count)
+            DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                for i in stride(from: worker, to: readable.count, by: workers) {
+                    let meta = readable[i]
+                    base[i] = source.adapter.scan(meta, previous: digests[meta.url.path], claims: claimTable)
                 }
             }
         }
         for digest in scanned {
-            guard let digest else { continue }
+            guard var digest else { continue }
+            digest.profileId = profileId ?? source.rawValue
+            digest = PrivacyPolicy.load().apply(digest)
             result[digest.path] = digest
             changed = true
         }

@@ -11,6 +11,26 @@ struct PricingRule: Codable, Sendable {
     /// than guessed at from a neighbouring generation.
     var skip: Bool?
     var comment: String?
+    var ids: [String]?
+    var cacheRead: Double?
+    var cacheWrite5m: Double?
+    var cacheWrite1h: Double?
+    var contextWindow: Int64?
+    var longContextThreshold: Int64?
+    var fastMultiplier: Double?
+    var validFrom: String?
+    var validUntil: String?
+    var reviewAfter: String?
+    var sourceURL: String?
+
+    func matches(_ id: String, at date: Date?) -> Bool {
+        guard ids?.contains(id) ?? match.allSatisfy({ id.contains($0) }) else { return false }
+        if validFrom == nil && validUntil == nil { return true }
+        let day = ISO8601DateFormatter().string(from: date ?? Date()).prefix(10)
+        if let validFrom, day < validFrom { return false }
+        if let validUntil, day >= validUntil { return false }
+        return true
+    }
 }
 
 struct ContextWindowRule: Codable, Sendable {
@@ -27,7 +47,7 @@ struct PricingDocument: Codable, Sendable {
     var defaultContextWindow: Int64
     var rules: [PricingRule]
 
-    static let currentSchema = 1
+    static let currentSchema = 2
 }
 
 /// Anchor for `Bundle(for:)`, so resource lookup can be relative to this
@@ -40,6 +60,13 @@ private final class BundleAnchor {}
 struct PricingOverride: Codable, Sendable, Equatable {
     var input: Double
     var output: Double
+    var cacheRead: Double?
+    var cacheWrite5m: Double?
+    var cacheWrite1h: Double?
+
+    var isValid: Bool {
+        [input, output, cacheRead, cacheWrite5m, cacheWrite1h].compactMap { $0 }.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1_000_000 }
+    }
 }
 
 /// Resolves model ids to prices.
@@ -92,6 +119,9 @@ final class PricingCatalog: @unchecked Sendable {
     /// Memoized id → price. Substring matching is the hot path of every cost
     /// calculation; models per machine number in the dozens.
     private var resolved: [String: ModelPricing?] = [:]
+    private var canonicalIDs: [String: String] = [:]
+    private var persistenceError: String?
+    var lastError: String? { lock.lock(); defer { lock.unlock() }; return persistenceError }
     /// Where overrides persist. Injectable so a test never reads — or writes —
     /// the real user file in Application Support.
     private let overridesURL: URL
@@ -119,39 +149,92 @@ final class PricingCatalog: @unchecked Sendable {
 
     // MARK: - Lookup
 
-    func pricing(for model: String) -> ModelPricing? {
+    @inline(never)
+    func pricing(for model: String, context: PricingContext? = nil) -> ModelPricing? {
         lock.lock()
         defer { lock.unlock() }
-        if let cached = resolved[model] { return cached }
-        let value = compute(for: model)
-        resolved[model] = value
+        let id: String
+        if let cached = canonicalIDs[model] { id = cached }
+        else {
+            id = ModelIdentity.canonical(model)
+            if canonicalIDs.count > 512 { canonicalIDs.removeAll(keepingCapacity: true) }
+            canonicalIDs[model] = id
+        }
+        let day = Int64((context?.date ?? Date()).timeIntervalSince1970 / 86400)
+        let band = document.rules.compactMap(\.longContextThreshold).filter { (context?.promptTokens ?? 0) > $0 }.count
+        let key = "\(id)|\(day)|\(context?.tier.rawValue ?? "unknown")|\(band)|\(context?.regional ?? false)"
+        // Every rate-changing dimension participates in this bounded memo.
+        if let hit = resolved[key] { return hit }
+        let value = compute(for: id, context: context)
+        if resolved.count > 4096 { resolved.removeAll(keepingCapacity: true) }
+        resolved[key] = .some(value)
         return value
     }
 
-    /// Assumes the lock is held.
-    private func compute(for model: String) -> ModelPricing? {
-        let id = model.lowercased()
-        guard !id.isEmpty else { return nil }
-
-        let vendor = Self.vendor(for: id)
-
-        // Find the matching rule first. A `skip: true` rule is a deliberate
-        // "never guess a price for this" — synthetic models, unknown vendor
-        // generations — and an override must not be able to turn one into a
-        // cost. Otherwise overriding "Synthetic" would start billing for
-        // Claude Code's internal placeholder turns.
-        var matched: PricingRule?
-        for rule in document.rules where rule.match.allSatisfy({ id.contains($0) }) {
-            matched = rule
-            break
-        }
+    @inline(never)
+    private func compute(for model: String, context: PricingContext?) -> ModelPricing? {
+        let id = model
+        guard !id.isEmpty, !id.contains("synthetic") else { return nil }
+        let matched = document.rules.first { $0.matches(id, at: context?.date) }
+        let vendor = matched?.vendor ?? Self.vendor(for: id)
+        // Read legacy labels only when they describe this exact variant. New
+        // writes always use canonical IDs; e.g. a GPT-5.4 override cannot leak
+        // into Mini/Nano, whose display labels are now distinct.
+        let override = overrides[id] ?? overrides[ModelIdentity.displayName(id)]
         if matched?.skip == true { return nil }
-
-        if let override = overrides[ModelFamily.shortName(for: model)] {
-            return Self.makePricing(input: override.input, output: override.output, vendor: vendor)
+        guard let input = override?.input ?? matched?.input,
+              let output = override?.output ?? matched?.output else { return nil }
+        let defaults = Self.makePricing(input: input, output: output, vendor: vendor)
+        func inherited(_ value: Double?, fallback: Double) -> Double {
+            guard let value else { return fallback }
+            if override != nil, let original = matched?.input, original > 0 { return value * input / original }
+            return value
         }
-        guard let rule = matched, let input = rule.input, let output = rule.output else { return nil }
-        return Self.makePricing(input: input, output: output, vendor: rule.vendor ?? vendor)
+        var p = ModelPricing(input: input, output: output,
+            cacheRead: override?.cacheRead ?? inherited(matched?.cacheRead, fallback: defaults.cacheRead),
+            cacheWrite5m: override?.cacheWrite5m ?? inherited(matched?.cacheWrite5m, fallback: defaults.cacheWrite5m),
+            cacheWrite1h: override?.cacheWrite1h ?? inherited(matched?.cacheWrite1h, fallback: defaults.cacheWrite1h))
+        guard [p.input, p.output, p.cacheRead, p.cacheWrite5m, p.cacheWrite1h].allSatisfy({ $0.isFinite && $0 >= 0 }) else { return nil }
+        var inputMultiplier = 1.0
+        var outputMultiplier = 1.0
+        if let threshold = matched?.longContextThreshold, let prompt = context?.promptTokens, prompt > threshold {
+            inputMultiplier = 2
+            outputMultiplier = 1.5
+        }
+        let tier = context?.tier ?? .unknown
+        let multiplier: Double
+        switch tier {
+        case .fast:
+            guard let fast = matched?.fastMultiplier else { return nil }
+            multiplier = fast
+        case .batch: multiplier = 0.5
+        case .flex:
+            guard vendor == "openai" else { return nil }
+            multiplier = 0.5
+        default: multiplier = 1
+        }
+        let region = context?.regional == true ? 1.1 : 1
+        inputMultiplier *= multiplier * region
+        outputMultiplier *= multiplier * region
+        p = ModelPricing(input: p.input * inputMultiplier, output: p.output * outputMultiplier,
+                         cacheRead: p.cacheRead * inputMultiplier,
+                         cacheWrite5m: p.cacheWrite5m * inputMultiplier,
+                         cacheWrite1h: p.cacheWrite1h * inputMultiplier)
+        return p
+    }
+
+    var updated: String { document.updated ?? "unknown" }
+    var knownModels: [String] { document.rules.flatMap { $0.ids ?? [] }.sorted() }
+
+    func reviewNotice(at now: Date = Date()) -> String? {
+        let day = String(ISO8601DateFormatter().string(from: now).prefix(10))
+        let due = document.rules.filter { $0.reviewAfter.map { day >= $0 } ?? false }.flatMap { $0.ids ?? [] }
+        if !due.isEmpty { return "Promotional rates need review: " + due.map(ModelIdentity.displayName).joined(separator: ", ") }
+        if let updated = document.updated,
+           let checked = ISO8601DateFormatter().date(from: updated + "T00:00:00Z"), now.timeIntervalSince(checked) > 90 * 86400 {
+            return "This catalog was checked more than 90 days ago. Verify current vendor rates or install an update."
+        }
+        return nil
     }
 
     var webSearchPer1000: Double {
@@ -163,7 +246,9 @@ final class PricingCatalog: @unchecked Sendable {
     func contextWindow(for model: String) -> Int64 {
         lock.lock()
         defer { lock.unlock() }
-        let id = model.lowercased()
+        let id = ModelIdentity.canonical(model)
+        if model.contains("[1m]") { return 1_000_000 }
+        if let window = document.rules.first(where: { $0.matches(id, at: nil) })?.contextWindow { return window }
         for rule in document.contextWindows where rule.match.allSatisfy({ id.contains($0) }) {
             return rule.window
         }
@@ -206,15 +291,19 @@ final class PricingCatalog: @unchecked Sendable {
     /// calculation reflects it immediately.
     func setOverride(_ override: PricingOverride?, forShortName name: String) {
         lock.lock()
+        let previous = overrides
+        persistenceError = nil
         if let override {
+            guard override.isValid else { persistenceError = "Rates must be finite and nonnegative."; lock.unlock(); return }
             overrides[name] = override
         } else {
             overrides.removeValue(forKey: name)
         }
         resolved.removeAll(keepingCapacity: true)
         let snapshot = overrides
+        do { try Self.saveOverrides(snapshot, to: overridesURL) }
+        catch { overrides = previous; persistenceError = error.localizedDescription }
         lock.unlock()
-        Self.saveOverrides(snapshot, to: overridesURL)
         Diagnostics.pricing.notice("pricing override \(override == nil ? "cleared" : "set") for \(name, privacy: .public)")
     }
 
@@ -228,21 +317,15 @@ final class PricingCatalog: @unchecked Sendable {
         guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode([String: PricingOverride].self, from: data)
         else { return [:] }
-        return decoded
+        return decoded.filter { $0.value.isValid }
     }
 
-    private static func saveOverrides(_ overrides: [String: PricingOverride], to url: URL) {
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(overrides)
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try data.write(to: url, options: .atomic)
-        } catch {
-            Diagnostics.pricing.error("could not save pricing overrides: \(error.localizedDescription, privacy: .public)")
-        }
+    private static func saveOverrides(_ overrides: [String: PricingOverride], to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(overrides)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
     }
 
     // MARK: - Loading
@@ -307,47 +390,6 @@ final class PricingCatalog: @unchecked Sendable {
         }
     }
 
-    /// The pre-1.5 hardcoded table, kept verbatim as a fallback. Any build that
-    /// cannot reach the resource bundle prices exactly as before.
-    static let builtIn = PricingDocument(
-        schema: PricingDocument.currentSchema,
-        updated: "built-in",
-        webSearchPer1000: 10.0,
-        contextWindows: [
-            ContextWindowRule(match: ["[1m]"], window: 1_000_000),
-            ContextWindowRule(match: ["gpt"], window: 272_000),
-            ContextWindowRule(match: ["codex"], window: 272_000),
-        ],
-        defaultContextWindow: 200_000,
-        rules: [
-            PricingRule(match: ["synthetic"], skip: true),
-            PricingRule(match: ["codex-mini-latest"], vendor: "openai", input: 1.5, output: 6),
-            PricingRule(match: ["codex-mini"], vendor: "openai", input: 0.25, output: 2),
-            PricingRule(match: ["gpt-5.5"], vendor: "openai", input: 5, output: 30),
-            PricingRule(match: ["gpt-5.4-mini"], vendor: "openai", input: 0.75, output: 4.5),
-            PricingRule(match: ["gpt-5.4-nano"], vendor: "openai", input: 0.20, output: 1.25),
-            PricingRule(match: ["gpt-5.4"], vendor: "openai", input: 2.5, output: 15),
-            PricingRule(match: ["gpt-5.3"], vendor: "openai", input: 1.75, output: 14),
-            PricingRule(match: ["gpt-5.2"], vendor: "openai", input: 0.875, output: 7),
-            PricingRule(match: ["gpt-5", "mini"], vendor: "openai", input: 0.25, output: 2),
-            PricingRule(match: ["gpt-5", "nano"], vendor: "openai", input: 0.05, output: 0.40),
-            PricingRule(match: ["gpt-5"], vendor: "openai", input: 1.25, output: 10),
-            PricingRule(match: ["gpt"], skip: true),
-            PricingRule(match: ["codex"], skip: true),
-            PricingRule(match: ["fable"], vendor: "anthropic", input: 10, output: 50),
-            PricingRule(match: ["mythos"], vendor: "anthropic", input: 10, output: 50),
-            PricingRule(match: ["opus-4-5"], vendor: "anthropic", input: 5, output: 25),
-            PricingRule(match: ["opus-4-6"], vendor: "anthropic", input: 5, output: 25),
-            PricingRule(match: ["opus-4-7"], vendor: "anthropic", input: 5, output: 25),
-            PricingRule(match: ["opus-4-8"], vendor: "anthropic", input: 5, output: 25),
-            PricingRule(match: ["opus"], vendor: "anthropic", input: 15, output: 75),
-            PricingRule(match: ["sonnet"], vendor: "anthropic", input: 3, output: 15),
-            PricingRule(match: ["haiku-4"], vendor: "anthropic", input: 1, output: 5),
-            PricingRule(match: ["3-5-haiku"], vendor: "anthropic", input: 0.8, output: 4),
-            PricingRule(match: ["haiku-3-5"], vendor: "anthropic", input: 0.8, output: 4),
-            PricingRule(match: ["haiku"], vendor: "anthropic", input: 0.25, output: 1.25),
-            PricingRule(match: ["claude-2"], vendor: "anthropic", input: 8, output: 24),
-            PricingRule(match: ["instant"], vendor: "anthropic", input: 0.8, output: 2.4),
-        ]
-    )
+    // Generated from pricing.json by Scripts/generate_pricing.py; CI checks drift.
+    static let builtIn = try! JSONDecoder().decode(PricingDocument.self, from: Data(BundledPricing.json.utf8))
 }

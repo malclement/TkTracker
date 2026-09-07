@@ -30,8 +30,8 @@ and `UI/` are the SwiftUI menu bar app; `CLI/` is the terminal report.
 
 ## Ground rules
 
-- **Privacy is the product.** TkTracker must never make network requests,
-  embed analytics, or write user data anywhere except its own cache in
+- **Privacy is the product.** Usage parsing must remain local. Network integrations require an explicit opt-in and must not upload session history. Do not
+  embed analytics, or write user data outside user-selected exports and its own storage in
   `~/Library/Application Support/TkTracker/`. PRs that break this guarantee
   will not be merged.
 - **Accounting must stay exact.** Changes to `Core/` (parser, dedupe, claim
@@ -43,7 +43,7 @@ and `UI/` are the SwiftUI menu bar app; `CLI/` is the terminal report.
 ## Updating model pricing
 
 The most common contribution: when Anthropic or OpenAI ships or reprices a
-model, edit the table in `Sources/TkTracker/Core/Pricing.swift`, add a test
+model, edit the table in `Sources/TkTracker/Resources/pricing.json`, add a test
 case in `Tests/TkTrackerTests` (`CoreTests.swift` for Claude models,
 `CodexTests.swift` for OpenAI ones), and link the public pricing page in your
 PR description.
@@ -67,3 +67,5 @@ sensitive content redacted) makes most parser issues fixable quickly.
 
 Please do not open public issues for security problems — see
 [SECURITY.md](SECURITY.md).
+
+Run `python3 Scripts/generate_pricing.py` after pricing edits and commit the generated fallback. CI checks for drift. See `docs/release-validation.md` for packaging gates.

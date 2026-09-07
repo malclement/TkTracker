@@ -10,12 +10,11 @@ import Foundation
 /// never replay another file's token events), and unlike the cumulative
 /// `total_token_usage` it is immune to the rebase that compaction applies.
 /// `cached_input_tokens` is the cached subset of `input_tokens`, so input is
-/// split into uncached input + cache reads; OpenAI bills no cache writes.
+/// split into uncached input, cache reads and any explicitly reported cache writes.
 ///
 /// The model comes from the most recent `turn_context` line (it can change
 /// mid-session). The rare usage seen before any turn context is held back and
-/// attributed to the first model the file declares — or to "gpt-5" if the file
-/// never names one, so a handful of tokens still price at the family rate.
+/// attributed to the first model the file declares — or left unpriced if the file never names one.
 enum CodexParser {
     private static let usageNeedle = Data("\"token_count\"".utf8)
     private static let metaNeedle = Data("\"session_meta\"".utf8)
@@ -23,7 +22,7 @@ enum CodexParser {
     private static let userNeedle = Data("\"user_message\"".utf8)
 
     /// Attribution for usage in a file that never declares its model.
-    static let fallbackModel = "gpt-5"
+    static let fallbackModel = "unknown-codex"
 
     static func scan(
         url: URL,
@@ -32,7 +31,7 @@ enum CodexParser {
         mtime: Double
     ) -> FileDigest {
         var digest: FileDigest
-        if let prev = previous, size >= prev.offset {
+        if let prev = previous, size >= prev.offset, prev.parserRevision == 2 {
             digest = prev
         } else {
             // New file, or truncated/rewritten below our offset: parse from scratch.
@@ -40,12 +39,10 @@ enum CodexParser {
         }
         digest.source = .codex
         digest.missing = false
+        digest.parserRevision = 2
+        if digest.records == nil { digest.records = [] }
 
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            digest.size = size
-            digest.mtime = mtime
-            return digest
-        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return previous ?? digest }
         defer { try? handle.close() }
 
         var state = ScanState(digest: digest)
@@ -127,6 +124,13 @@ enum CodexParser {
         mutating func adopt(model: String) {
             currentModel = model
             digest.lastModel = model
+            if !pending.isEmpty, let records = digest.records {
+                digest.records = records.map { record in
+                    var r = record
+                    if r.model == CodexParser.fallbackModel { r.model = model }
+                    return r
+                }
+            }
             guard !pending.isEmpty else { return }
             for (hour, totals) in pending {
                 buckets[HourModelKey(hour: hour, model: model), default: TokenTotals()].add(totals)
@@ -177,7 +181,8 @@ enum CodexParser {
         let hasMeta = head.range(of: metaNeedle) != nil
         let hasTurn = head.range(of: turnNeedle) != nil
         let wantsUserLine = state.digest.fallbackTitle == nil && head.range(of: userNeedle) != nil
-        guard hasUsage || hasMeta || hasTurn || wantsUserLine else { return }
+        let compaction = head.range(of: Data("context_compacted".utf8)) != nil
+        guard hasUsage || hasMeta || hasTurn || wantsUserLine || compaction else { return }
 
         guard let raw = try? state.decoder.decode(RawCodexLine.self, from: Data(line)),
               let payload = raw.payload
@@ -185,6 +190,7 @@ enum CodexParser {
 
         switch raw.type {
         case "session_meta":
+            state.digest.parentSessionId = payload.source?.parentThreadId
             if let id = payload.id, !id.isEmpty { state.digest.sessionId = id }
             if let cwd = payload.cwd, !cwd.isEmpty {
                 state.digest.cwd = cwd
@@ -195,6 +201,8 @@ enum CodexParser {
             if let branch = payload.git?.branch, !branch.isEmpty { state.digest.gitBranch = branch }
 
         case "turn_context":
+            if let branch = payload.git?.branch ?? payload.git_branch { state.digest.gitBranch = branch }
+            state.digest.serviceTier = ServiceTier(observed: payload.service_tier ?? payload.speed)
             if let model = payload.model, !model.isEmpty { state.adopt(model: model) }
             if let cwd = payload.cwd, !cwd.isEmpty {
                 state.digest.cwd = cwd
@@ -206,6 +214,10 @@ enum CodexParser {
         case "event_msg":
             switch payload.type {
             case "token_count":
+                if let quota = payload.rate_limits, !quota.windows.isEmpty,
+                   let timestamp = raw.timestamp.flatMap(JSONLParser.epoch(fromISO8601:)) {
+                    state.digest.quota = QuotaSnapshot(observedAt: Date(timeIntervalSince1970: timestamp), origin: "Local session", windows: quota.windows)
+                }
                 // `info` is null on rate-limit-only updates; `last_token_usage`
                 // is the per-call delta (the cumulative counter rebases on
                 // compaction and would undercount).
@@ -213,12 +225,14 @@ enum CodexParser {
                 if let window = payload.info?.modelContextWindow, window > 0 {
                     state.digest.contextWindow = window
                 }
-                let rawInput = usage.inputTokens ?? 0
+                let rawInput = max(usage.inputTokens ?? 0, 0)
                 let cached = min(max(usage.cachedInputTokens ?? 0, 0), max(rawInput, 0))
                 var t = TokenTotals()
-                t.input = rawInput.saturatingAdding(-cached)
+                let writes = min(max(usage.cacheWriteTokens ?? usage.cacheCreationInputTokens ?? 0, 0), rawInput - cached)
+                t.input = rawInput - cached - writes
+                t.cacheWrite5m = writes
                 t.cacheRead = cached
-                t.output = usage.outputTokens ?? 0
+                t.output = max(usage.outputTokens ?? 0, 0)
                 guard t.total > 0 else { return }
                 t.messages = 1
 
@@ -226,12 +240,22 @@ enum CodexParser {
                     ?? state.digest.lastTs ?? Date().timeIntervalSince1970
                 let hour = Int64(ts / 3600) * 3600
                 state.add(hour: hour, totals: t)
+                state.digest.records?.append(HourBucket(hour: hour, model: state.currentModel ?? fallbackModel, totals: t,
+                    timestamp: raw.timestamp.flatMap(JSONLParser.epoch(fromISO8601:)), branch: state.digest.gitBranch,
+                    context: PricingContext(date: Date(timeIntervalSince1970: ts),
+                        tier: payload.service_tier.map(ServiceTier.init(observed:)) ?? state.digest.serviceTier ?? .unknown,
+                        promptTokens: rawInput), contextTokens: rawInput))
 
                 state.digest.firstTs = min(state.digest.firstTs ?? ts, ts)
                 state.digest.lastTs = max(state.digest.lastTs ?? ts, ts)
                 if let model = state.currentModel { state.digest.lastModel = model }
                 state.digest.lastContextTokens = max(rawInput, 0)
 
+            case "context_compacted":
+                if let ts = raw.timestamp.flatMap(JSONLParser.epoch(fromISO8601:)) {
+                    if state.digest.markers == nil { state.digest.markers = [] }
+                    state.digest.markers?.append(SessionMarker(timestamp: ts, kind: "Compaction"))
+                }
             case "user_message":
                 guard state.digest.fallbackTitle == nil, let text = payload.message?.text else { return }
                 let firstLine = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
@@ -270,6 +294,11 @@ private struct RawCodexPayload: Decodable {
     let type: String?
     let message: RawCodexText?
     let info: RawCodexTokenInfo?
+    let service_tier: String?
+    let speed: String?
+    let git_branch: String?
+    let source: RawCodexOrigin?
+    let rate_limits: RawQuota?
 }
 
 private struct RawCodexGit: Decodable {
@@ -306,10 +335,28 @@ private struct RawCodexUsage: Decodable {
     let inputTokens: Int64?
     let cachedInputTokens: Int64?
     let outputTokens: Int64?
+    let cacheWriteTokens: Int64?
+    let cacheCreationInputTokens: Int64?
 
     enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
         case cachedInputTokens = "cached_input_tokens"
         case outputTokens = "output_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
+        case cacheCreationInputTokens = "cache_creation_input_tokens"
+    }
+}
+
+private struct RawCodexOrigin: Decodable {
+    var parentThreadId: String?
+    init(from decoder: Decoder) throws {
+        struct Origin: Decodable {
+            struct Subagent: Decodable {
+                struct Spawn: Decodable { var parent_thread_id: String? }
+                var spawn: Spawn?
+            }
+            var subagent: Subagent?
+        }
+        parentThreadId = (try? Origin(from: decoder))?.subagent?.spawn?.parent_thread_id
     }
 }

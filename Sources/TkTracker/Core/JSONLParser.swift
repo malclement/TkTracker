@@ -63,9 +63,9 @@ enum JSONLChunker {
 /// JSONL lines repeat the same usage payload — deduped by (messageId, requestId).
 enum JSONLParser {
     // Claude Code writes compact JSON, so needles can include the colon.
-    private static let usageNeedle = Data("\"usage\":".utf8)
-    private static let titleNeedle = Data("\"aiTitle\":".utf8)
-    private static let userNeedle = Data("\"type\":\"user\"".utf8)
+    private static let usageNeedle = Data("\"usage\"".utf8)
+    private static let titleNeedle = Data("\"aiTitle\"".utf8)
+    private static let userNeedle = Data("\"user\"".utf8)
 
     private static let dedupeWindow = 400
     private static let dedupePersisted = 250
@@ -80,19 +80,20 @@ enum JSONLParser {
     ) -> FileDigest {
         let sessionId = url.deletingPathExtension().lastPathComponent
         var digest: FileDigest
-        if let prev = previous, size >= prev.offset {
+        if let prev = previous, size >= prev.offset, prev.parserRevision == 2 {
             digest = prev
         } else {
             // New file, or truncated/rewritten below our offset: parse from scratch.
             digest = FileDigest(path: url.path, sessionId: sessionId, projectDir: projectDir)
         }
-        digest.missing = false
-
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            digest.size = size
-            digest.mtime = mtime
-            return digest
+        if url.deletingLastPathComponent().lastPathComponent == "subagents" {
+            digest.parentSessionId = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
         }
+        digest.missing = false
+        digest.parserRevision = 2
+        if digest.records == nil { digest.records = [] }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return previous ?? digest }
         defer { try? handle.close() }
 
         var state = ScanState(digest: digest, claims: claims)
@@ -149,10 +150,15 @@ enum JSONLParser {
         let hasUsage = line.range(of: usageNeedle) != nil
         let hasTitle = line.range(of: titleNeedle) != nil
         let wantsUserLine = state.digest.fallbackTitle == nil && line.range(of: userNeedle) != nil
-        guard hasUsage || hasTitle || wantsUserLine else { return }
+        let isCompaction = line.range(of: Data("compact_boundary".utf8)) != nil
+        guard hasUsage || hasTitle || wantsUserLine || isCompaction else { return }
 
         guard let raw = try? state.decoder.decode(RawLine.self, from: Data(line)) else { return }
 
+        if isCompaction, let ts = raw.timestamp.flatMap(epoch(fromISO8601:)) {
+            if state.digest.markers == nil { state.digest.markers = [] }
+            state.digest.markers?.append(SessionMarker(timestamp: ts, kind: "Compaction"))
+        }
         if let cwd = raw.cwd, !cwd.isEmpty { state.digest.cwd = cwd }
         if let branch = raw.gitBranch, !branch.isEmpty { state.digest.gitBranch = branch }
 
@@ -175,17 +181,17 @@ enum JSONLParser {
         else { return }
 
         var t = TokenTotals()
-        t.input = usage.inputTokens ?? 0
-        t.output = usage.outputTokens ?? 0
-        t.cacheRead = usage.cacheReadInputTokens ?? 0
-        if let nested = usage.cacheCreation, (nested.ephemeral5m ?? 0) + (nested.ephemeral1h ?? 0) > 0 {
-            t.cacheWrite5m = nested.ephemeral5m ?? 0
-            t.cacheWrite1h = nested.ephemeral1h ?? 0
+        t.input = max(usage.inputTokens ?? 0, 0)
+        t.output = max(usage.outputTokens ?? 0, 0)
+        t.cacheRead = max(usage.cacheReadInputTokens ?? 0, 0)
+        if let nested = usage.cacheCreation, ((nested.ephemeral5m ?? 0) > 0 || (nested.ephemeral1h ?? 0) > 0) {
+            t.cacheWrite5m = max(nested.ephemeral5m ?? 0, 0)
+            t.cacheWrite1h = max(nested.ephemeral1h ?? 0, 0)
         } else {
             // Older format: no 5m/1h split — 5m is the historical default TTL.
-            t.cacheWrite5m = usage.cacheCreationInputTokens ?? 0
+            t.cacheWrite5m = max(usage.cacheCreationInputTokens ?? 0, 0)
         }
-        t.webSearches = usage.serverToolUse?.webSearchRequests ?? 0
+        t.webSearches = max(usage.serverToolUse?.webSearchRequests ?? 0, 0)
         guard t.total > 0 || t.webSearches > 0 else { return }
         t.messages = 1
 
@@ -206,6 +212,12 @@ enum JSONLParser {
         let hour = Int64(ts / 3600) * 3600
         state.buckets[HourModelKey(hour: hour, model: model), default: TokenTotals()].add(t)
 
+        let prompt = t.input.saturatingAdding(t.cacheRead).saturatingAdding(t.cacheWrite)
+        state.digest.records?.append(HourBucket(hour: hour, model: model, totals: t,
+            timestamp: raw.timestamp.flatMap(epoch(fromISO8601:)), branch: state.digest.gitBranch,
+            context: PricingContext(date: Date(timeIntervalSince1970: ts),
+                tier: ServiceTier(observed: usage.speed ?? message.service_tier), promptTokens: prompt,
+                regional: usage.inference_geo.map { $0 == "us" }), contextTokens: prompt))
         state.digest.firstTs = min(state.digest.firstTs ?? ts, ts)
         state.digest.lastTs = max(state.digest.lastTs ?? ts, ts)
         state.digest.lastModel = model
@@ -297,6 +309,7 @@ private struct RawMessage: Decodable {
     let model: String?
     let usage: RawUsage?
     let content: RawContent?
+    let service_tier: String?
 }
 
 /// `content` is a string on plain user prompts, an array of blocks elsewhere.
@@ -322,6 +335,8 @@ private struct RawUsage: Decodable {
     let cacheReadInputTokens: Int64?
     let cacheCreation: RawCacheCreation?
     let serverToolUse: RawServerToolUse?
+    let speed: String?
+    let inference_geo: String?
 
     enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
@@ -330,6 +345,7 @@ private struct RawUsage: Decodable {
         case cacheReadInputTokens = "cache_read_input_tokens"
         case cacheCreation = "cache_creation"
         case serverToolUse = "server_tool_use"
+        case speed, inference_geo
     }
 }
 

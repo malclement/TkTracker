@@ -7,11 +7,12 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
-            PlanSettings().tabItem { Label("Plan", systemImage: "creditcard") }
+            AccountSettings().tabItem { Label("Accounts", systemImage: "creditcard") }
+            BudgetSettings().tabItem { Label("Budgets", systemImage: "chart.pie") }
             PricingSettings().tabItem { Label("Pricing", systemImage: "tag") }
             AdvancedSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
         }
-        .frame(width: 520)
+        .frame(width: 650, height: 660)
         .onAppear { NSApp.activate() }
     }
 }
@@ -99,80 +100,6 @@ private struct GeneralSettings: View {
 
 // MARK: - Plan
 
-private struct PlanSettings: View {
-    @Environment(UsageStore.self) private var store
-
-    var body: some View {
-        @Bindable var store = store
-        Form {
-            Section("Subscription") {
-                Picker("Plan", selection: Binding(
-                    get: { store.plan.id },
-                    set: { store.plan = UsagePlan.preset(id: $0) }
-                )) {
-                    ForEach(UsagePlan.presets) { preset in
-                        Text(preset.name).tag(preset.id)
-                    }
-                }
-
-                if store.plan.id != UsagePlan.none.id {
-                    LabeledContent("Monthly cost") {
-                        TextField("", value: $store.plan.monthlyCost, format: .number.precision(.fractionLength(0...2)))
-                            .frame(width: 90)
-                            .multilineTextAlignment(.trailing)
-                    }
-                    LabeledContent("5-hour block limit") {
-                        TextField("", value: $store.plan.blockLimit, format: .number.precision(.fractionLength(0...2)))
-                            .frame(width: 90)
-                            .multilineTextAlignment(.trailing)
-                    }
-                    LabeledContent("Weekly limit") {
-                        TextField("", value: $store.plan.weeklyLimit, format: .number.precision(.fractionLength(0...2)))
-                            .frame(width: 90)
-                            .multilineTextAlignment(.trailing)
-                    }
-                }
-            }
-
-            Section {
-                Text("""
-                Anthropic and OpenAI express plan limits in messages and rolling \
-                windows, not dollars — and those thresholds change. TkTracker only \
-                knows API-equivalent value, so these limits are an approximation of \
-                *your* experience, not published figures.
-
-                Treat the presets as starting points: when you first get throttled, \
-                note what the block gauge read and set the limit there. Leave a \
-                field at 0 to hide that gauge. With no plan selected, TkTracker \
-                shows no limits at all.
-                """)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            if store.plan.tracksValue {
-                Section("Value") {
-                    LabeledContent("Last 30 days") {
-                        Text(Format.money(store.stats.rollingMonthCost))
-                            .monospacedDigit()
-                    }
-                    LabeledContent("Plan cost") {
-                        Text(Format.money(store.plan.monthlyCost))
-                            .monospacedDigit()
-                    }
-                    if let multiple = store.stats.planValueMultiple {
-                        LabeledContent("You got") {
-                            Text("\(Format.multiple(multiple)) your subscription in API-equivalent value")
-                                .foregroundStyle(multiple >= 1 ? Theme.good : .secondary)
-                        }
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
 // MARK: - Pricing
 
 private struct PricingSettings: View {
@@ -182,12 +109,15 @@ private struct PricingSettings: View {
     var body: some View {
         Form {
             Section("Rates (USD per million tokens)") {
-                if store.stats.models.isEmpty {
+                Text("Catalog checked \(PricingCatalog.shared.updated). Prices are API-equivalent estimates, not subscription charges.").font(.caption).foregroundStyle(.secondary)
+                if let notice = PricingCatalog.shared.reviewNotice() { Text(notice).foregroundStyle(.orange) }
+                if let error = PricingCatalog.shared.lastError { Text(error).foregroundStyle(.red) }
+                if store.allModels.isEmpty {
                     Text("No models seen yet.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(store.stats.models) { model in
+                    ForEach(store.allModels, id: \.self) { model in
                         rateRow(model)
                     }
                 }
@@ -200,7 +130,8 @@ private struct PricingSettings: View {
                             PricingCatalog.shared.setOverride(nil, forShortName: name)
                         }
                         editing.removeAll()
-                        store.refreshDerived()
+                        store.operationError = PricingCatalog.shared.lastError
+                store.refreshDerived()
                     }
                     .disabled(PricingCatalog.shared.overrideCount == 0)
                     Spacer()
@@ -209,8 +140,7 @@ private struct PricingSettings: View {
                         .foregroundStyle(.secondary)
                 }
                 Text("""
-                Rates ship in the app as data, so a vendor price change is a small \
-                update rather than a rebuild. Override one here when a rate goes \
+                Rates ship in the app and are refreshed with app releases. Override a model when a rate goes \
                 stale before TkTracker catches up, or when you have negotiated \
                 pricing. Overrides win over the shipped table and survive updates.
                 """)
@@ -222,15 +152,16 @@ private struct PricingSettings: View {
     }
 
     @ViewBuilder
-    private func rateRow(_ model: ModelRow) -> some View {
-        let name = model.shortName
-        let current = PricingCatalog.shared.pricing(for: model.model)
+    private func rateRow(_ model: String) -> some View {
+        let name = ModelIdentity.canonical(model)
+        let current = PricingCatalog.shared.pricing(for: model)
         let override = PricingCatalog.shared.override(forShortName: name)
+        VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 8) {
-            Swatch(color: store.colorScale.color(for: name, family: model.family))
+            Swatch(color: store.colorScale.color(for: name, family: ModelFamily(model: model)))
             VStack(alignment: .leading, spacing: 1) {
-                Text(name)
-                Text(model.model)
+                Text(ModelIdentity.displayName(model))
+                Text(model)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -251,6 +182,7 @@ private struct PricingSettings: View {
             Button {
                 PricingCatalog.shared.setOverride(nil, forShortName: name)
                 editing.removeValue(forKey: name)
+                store.operationError = PricingCatalog.shared.lastError
                 store.refreshDerived()
             } label: {
                 Image(systemName: "arrow.uturn.backward")
@@ -259,6 +191,28 @@ private struct PricingSettings: View {
             .disabled(override == nil)
             .help("Reset \(name) to the shipped rate")
         }
+        DisclosureGroup("Cache rates · USD / million tokens") {
+            TextField("Cache read", value: cacheBinding(for: name, current: current, key: \.cacheRead), format: .number)
+            TextField("Cache write 5m", value: cacheBinding(for: name, current: current, key: \.cacheWrite5m), format: .number)
+            TextField("Cache write 1h", value: cacheBinding(for: name, current: current, key: \.cacheWrite1h), format: .number)
+        }.font(.caption)
+        }
+    }
+
+    private func cacheBinding(for name: String, current: ModelPricing?, key: WritableKeyPath<PricingOverride, Double?>) -> Binding<Double> {
+        func initial() -> PricingOverride {
+            PricingOverride(input: current?.input ?? 0, output: current?.output ?? 0,
+                cacheRead: current?.cacheRead, cacheWrite5m: current?.cacheWrite5m, cacheWrite1h: current?.cacheWrite1h)
+        }
+        return Binding(get: { (editing[name] ?? PricingCatalog.shared.override(forShortName: name) ?? initial())[keyPath: key] ?? 0 }, set: { value in
+            guard value.isFinite, value >= 0, value <= 1_000_000 else { return }
+            var override = editing[name] ?? PricingCatalog.shared.override(forShortName: name) ?? initial()
+            override[keyPath: key] = value
+            PricingCatalog.shared.setOverride(override, forShortName: name)
+            if PricingCatalog.shared.lastError == nil { editing[name] = override }
+            store.operationError = PricingCatalog.shared.lastError
+            store.refreshDerived()
+        })
     }
 
     /// Edits both halves together: an override needs an input *and* an output, so
@@ -281,9 +235,11 @@ private struct PricingSettings: View {
                 var staged = editing[name]
                     ?? PricingCatalog.shared.override(forShortName: name)
                     ?? PricingOverride(input: current?.input ?? 0, output: current?.output ?? 0)
+                guard newValue.isFinite, newValue >= 0, newValue <= 1_000_000 else { return }
                 staged[keyPath: keyPath] = newValue
-                editing[name] = staged
                 PricingCatalog.shared.setOverride(staged, forShortName: name)
+                if PricingCatalog.shared.lastError == nil { editing[name] = staged }
+                store.operationError = PricingCatalog.shared.lastError
                 store.refreshDerived()
             }
         )
@@ -302,8 +258,7 @@ private struct AdvancedSettings: View {
             Section("Updates") {
                 Toggle("Check for updates automatically", isOn: $store.checksForUpdates)
                 Text("""
-                Off by default, and TkTracker makes no network request of any kind \
-                until you turn it on. When enabled it fetches the public releases \
+                Off by default. When enabled it fetches the public releases \
                 page from api.github.com at most once a day, sends nothing about \
                 you or your usage, and never downloads or installs anything — it \
                 shows you a version and a link.
@@ -353,6 +308,21 @@ private struct AdvancedSettings: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("History & privacy") {
+                Button("Export usage backup…") { store.exportBackup() }
+                Button("Restore usage backup…") { store.restoreBackup() }
+                Text("Backups contain usage metadata, project paths and titles. Restore merges missing sessions into configured accounts; existing sessions win.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Omit session titles", isOn: $store.privacyPolicy.omitTitles)
+                Picker("Keep session detail metadata", selection: $store.privacyPolicy.detailRetentionDays) {
+                    Text("Forever").tag(0)
+                    Text("30 days").tag(30)
+                    Text("90 days").tag(90)
+                    Text("One year").tag(365)
+                }
+                Text("Retention removes old titles, context snapshots and compaction markers from TkTracker. Token, cost and branch accounting is kept. Source transcripts are unchanged.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Cache") {
                 HStack {
                     Button("Rescan everything") {

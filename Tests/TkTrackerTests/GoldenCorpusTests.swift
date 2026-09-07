@@ -124,7 +124,7 @@ struct GoldenCorpusTests {
         #expect(rollout.totals.output == 1_000_000)
         #expect(rollout.totals.total == 2_000_000)
         #expect(rollout.totals.messages == 1)
-        expectMoney(rollout.cost, 32.75, "Codex rollout")
+        expectMoney(rollout.cost, 50.50, "Codex rollout")
 
         // The window the session reported wins over the per-model table.
         #expect(rollout.contextWindow == 272_000)
@@ -133,14 +133,14 @@ struct GoldenCorpusTests {
     @Test func combinedStatsMatch() throws {
         // `.all` with a fixed `now` after the fixture timestamps, so the range
         // never clips and the test can't drift with the wall clock.
-        let now = Date(timeIntervalSince1970: 1_783_000_000)
+        let now = Date(timeIntervalSince1970: 1_783_500_000)
         let stats = StatsBuilder.build(digests: digests(), range: .all, now: now)
 
         #expect(stats.totals.total == 10_000_000)
         #expect(stats.totals.messages == 4)
-        expectMoney(stats.cost, 98.50, "combined")
+        expectMoney(stats.cost, 116.25, "combined")
         expectMoney(stats.cost(for: .claude), 65.75, "claude share")
-        expectMoney(stats.cost(for: .codex), 32.75, "codex share")
+        expectMoney(stats.cost(for: .codex), 50.50, "codex share")
 
         // Both tools worked in the same directory, so they merge into one project.
         #expect(stats.projects.count == 1)
@@ -155,7 +155,7 @@ struct GoldenCorpusTests {
 
     @Test func branchAttributionSplitsTheProject() throws {
         // Branch totals follow claim ownership, so this needs the settled state.
-        let now = Date(timeIntervalSince1970: 1_783_000_000)
+        let now = Date(timeIntervalSince1970: 1_783_500_000)
         let stats = StatsBuilder.build(digests: settledDigests(), range: .all, now: now)
 
         let byBranch = Dictionary(
@@ -163,7 +163,7 @@ struct GoldenCorpusTests {
             uniquingKeysWith: { first, _ in first }
         )
         // main covers s1 (Claude) and the Codex rollout; feature/golden is s2.
-        expectMoney(byBranch["main"]?.cost ?? 0, 59.75 + 32.75, "main branch")
+        expectMoney(byBranch["main"]?.cost ?? 0, 59.75 + 50.50, "main branch")
         expectMoney(byBranch["feature/golden"]?.cost ?? 0, 6.00, "feature branch")
     }
 

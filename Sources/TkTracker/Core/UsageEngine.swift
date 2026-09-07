@@ -23,8 +23,8 @@ actor UsageEngine {
         var claimCount = 0
     }
 
-    private var states: [UsageSource: SourceState]
-    private let order: [UsageSource]
+    private var states: [String: SourceState]
+    private var order: [String]
     private var lastSave = Date.distantPast
 
     /// Test seam: awaited once, after a detached scan returns but before its
@@ -45,27 +45,32 @@ actor UsageEngine {
     private var generation = 0
 
     init(pipelines: [(core: ScanCore, archive: HistoryArchive)] = UsageEngine.defaultPipelines()) {
-        var states: [UsageSource: SourceState] = [:]
-        var order: [UsageSource] = []
+        var states: [String: SourceState] = [:]
+        var order: [String] = []
         for pipeline in pipelines {
-            states[pipeline.core.source] = SourceState(core: pipeline.core, archive: pipeline.archive)
-            order.append(pipeline.core.source)
+            let id = pipeline.core.profileId ?? pipeline.core.source.rawValue
+            states[id] = SourceState(core: pipeline.core, archive: pipeline.archive)
+            order.append(id)
         }
         self.states = states
         self.order = order
     }
 
     static func defaultPipelines() -> [(core: ScanCore, archive: HistoryArchive)] {
-        UsageSource.allCases.map { source in
-            (
-                core: ScanCore(
-                    source: source,
-                    root: ScanCore.defaultRoot(for: source),
-                    cacheURL: ScanCore.defaultCacheURL(for: source)
-                ),
-                archive: HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
-            )
+        SourceProfile.load().filter(\.enabled).map(\.pipeline)
+    }
+
+    func configure(profiles: [SourceProfile]) -> RefreshReport {
+        guard flush() else { var report = snapshot(); report.cacheWriteFailed = true; return report }
+        generation += 1
+        states = [:]
+        order = []
+        for profile in SourceProfile.unique(profiles) where profile.enabled {
+            let pipeline = profile.pipeline
+            states[profile.id] = SourceState(core: pipeline.core, archive: pipeline.archive)
+            order.append(profile.id)
         }
+        return bootstrap()
     }
 
     /// Load the persisted caches so the UI can render instantly before the first scan.
@@ -92,7 +97,8 @@ actor UsageEngine {
             }
 
             state.archiveCache = archiveCache
-            state.digests = digests
+            for path in digests.keys { digests[path]?.profileId = source }
+            state.digests = digests.mapValues { PrivacyPolicy.load().apply($0) }
             state.claims = claims
             // A cache read at an older version was migrated in memory; mark it
             // dirty so the upgraded shape reaches disk on the next save rather
@@ -101,7 +107,7 @@ actor UsageEngine {
             states[source] = state
 
             Diagnostics.scan.info(
-                "\(source.rawValue, privacy: .public) bootstrap: \(digests.count) digests, \(claims.count) claims"
+                "\(source, privacy: .public) bootstrap: \(digests.count) digests, \(claims.count) claims"
             )
         }
         return snapshot()
@@ -110,7 +116,7 @@ actor UsageEngine {
     func refresh(sources: Set<UsageSource>) async -> RefreshReport {
         let started = Date()
         var report = RefreshReport()
-        for source in order where sources.contains(source) {
+        for source in order where states[source].map({ sources.contains($0.core.source) }) == true {
             guard let state = states[source] else { continue }
             let digestsSnapshot = state.digests
             let claimsSnapshot = state.claims
@@ -124,13 +130,13 @@ actor UsageEngine {
                 await hook()
             }
             guard startGeneration == generation, var updated = states[source] else {
-                Diagnostics.scan.notice("dropped stale \(source.rawValue) scan result after reset")
+                Diagnostics.scan.notice("dropped stale \(source) scan result after reset")
                 continue
             }
-            updated.digests = result.digests
+            updated.digests = result.digests.mapValues { PrivacyPolicy.load().apply($0) }
             updated.claims = result.claims
             report.unreadable.append(contentsOf: result.unreadable)
-            if let archived = HistoryArchive.updated(updated.archiveCache, digests: result.digests, claims: result.claims) {
+            if let archived = HistoryArchive.updated(updated.archiveCache, digests: updated.digests, claims: result.claims) {
                 updated.archiveCache = archived
                 if !updated.archive.save(archived) { report.cacheWriteFailed = true }
             }
@@ -177,12 +183,75 @@ actor UsageEngine {
             var digests: [String: FileDigest] = [:]
             var claims = ClaimMap()
             HistoryArchive.seed(archive: state.archiveCache, intoDigests: &digests, claims: &claims)
-            state.digests = digests
+            state.digests = digests.mapValues { PrivacyPolicy.load().apply($0) }
             state.claims = claims
             state.dirty = false
             states[source] = state
         }
         return await refresh(sources: sources)
+    }
+
+    func backup() -> ArchiveBackup {
+        ArchiveBackup(entries: order.compactMap { id in
+            guard let state = states[id] else { return nil }
+            let policy = PrivacyPolicy.load()
+            let cache = DigestCache(version: HistoryArchive.writeVersion,
+                digests: state.digests.mapValues { policy.apply($0) }, claims: state.claims)
+            return ArchiveBackup.Entry(profileId: id, source: state.core.source,
+                rootPath: ScanCore.canonicalPath(state.core.root), cache: cache)
+        })
+    }
+
+    /// Merge missing entries only. Existing session data and claim owners win.
+    /// All entries are validated before any archive is changed.
+    func restore(_ backup: ArchiveBackup) throws -> RefreshReport {
+        var proposed = states
+        for entry in backup.entries {
+            guard var state = proposed[entry.profileId], state.core.source == entry.source,
+                  ScanCore.canonicalPath(state.core.root) == entry.rootPath else {
+                throw ArchiveBackup.Failure.unknownProfile(entry.profileId)
+            }
+            guard !state.archiveCache.isUnwritable else { throw ArchiveBackup.Failure.persistence }
+            var imported = entry.cache
+            for (path, var digest) in imported.digests {
+                digest.source = state.core.source
+                digest.profileId = entry.profileId
+                digest.missing = true
+                imported.digests[path] = PrivacyPolicy.load().apply(digest)
+            }
+            HistoryArchive.seed(archive: imported, intoDigests: &state.digests, claims: &state.claims)
+            // A restored live session also needs a durable copy before rescanning.
+            HistoryArchive.seed(archive: imported, intoDigests: &state.archiveCache.digests, claims: &state.archiveCache.claims)
+            state.dirty = true
+            proposed[entry.profileId] = state
+        }
+        var saved: [String] = []
+        for id in order {
+            guard let state = proposed[id] else { continue }
+            guard state.archive.save(state.archiveCache) else {
+                for prior in saved { if let old = states[prior] { old.archive.save(old.archiveCache) } }
+                throw ArchiveBackup.Failure.persistence
+            }
+            saved.append(id)
+        }
+        generation += 1
+        states = proposed
+        guard flush() else { throw ArchiveBackup.Failure.persistence }
+        return snapshot()
+    }
+
+    func applyPrivacy(_ policy: PrivacyPolicy) throws -> RefreshReport {
+        generation += 1
+        for id in order {
+            guard var state = states[id] else { continue }
+            state.digests = state.digests.mapValues { policy.apply($0) }
+            state.archiveCache.digests = state.archiveCache.digests.mapValues { policy.apply($0) }
+            state.dirty = true
+            states[id] = state
+            guard state.archive.save(state.archiveCache) else { throw ArchiveBackup.Failure.persistence }
+        }
+        guard flush() else { throw ArchiveBackup.Failure.persistence }
+        return snapshot()
     }
 
     /// Digest snapshot without a rescan — used at launch, and whenever the store

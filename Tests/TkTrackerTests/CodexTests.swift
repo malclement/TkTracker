@@ -138,14 +138,14 @@ final class CodexTests {
         #expect(digest.totals.output == 15)
     }
 
-    @Test func fileWithoutAnyModelFallsBackToFamilyDefault() throws {
+    @Test func fileWithoutAnyModelRemainsUnpriced() throws {
         let url = try write([
             meta(),
             tokenCount(input: 100, output: 10),
         ])
         let digest = try scan(url)
         #expect(digest.buckets.first?.model == CodexParser.fallbackModel)
-        #expect(Pricing.pricing(for: CodexParser.fallbackModel) != nil) // priced, not dropped
+        #expect(Pricing.pricing(for: CodexParser.fallbackModel) == nil) // priced, not dropped
         // The attribution is provisional: recorded for reversal, and the model
         // stays unknown so a later turn_context can still claim the usage.
         #expect(digest.pendingBuckets?.isEmpty == false)
@@ -317,7 +317,7 @@ final class CodexTests {
         #expect(Pricing.pricing(for: "gpt-5.4")?.input == 2.5)
         #expect(Pricing.pricing(for: "gpt-5.4-mini")?.input == 0.75)
         #expect(Pricing.pricing(for: "gpt-5.3-codex")?.input == 1.75)
-        #expect(Pricing.pricing(for: "gpt-5.2")?.input == 0.875)
+        #expect(Pricing.pricing(for: "gpt-5.2")?.input == 1.75)
         #expect(Pricing.pricing(for: "gpt-5.1-codex-mini")?.input == 0.25)
         #expect(Pricing.pricing(for: "codex-mini-latest")?.input == 1.5)
         #expect(Pricing.pricing(for: "gpt-5.1-codex-max")?.input == 1.25)
@@ -346,7 +346,7 @@ final class CodexTests {
         #expect(ModelFamily.version(of: "claude-opus-4-8") == 4.8)
         #expect(ModelFamily.shortName(for: "claude-fable-5") == "Fable 5")
         #expect(ModelFamily.displayOrder.firstIndex(of: .gpt) != nil)
-        #expect(Pricing.contextWindow(for: "gpt-5.5") == 272_000)
+        #expect(Pricing.contextWindow(for: "gpt-5.5") == 1_050_000)
     }
 
     // MARK: aggregation
@@ -376,7 +376,7 @@ final class CodexTests {
         let codexRow = try #require(stats.sessions.first { $0.source == .codex })
         #expect(codexRow.contextLimit == 258_400) // observed, not the table fallback
         let claudeRow = try #require(stats.sessions.first { $0.source == .claude })
-        #expect(claudeRow.contextLimit == 200_000)
+        #expect(claudeRow.contextLimit == 1_000_000)
 
         // Same cwd from both tools folds into one project row.
         #expect(stats.projects.count == 1)

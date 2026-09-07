@@ -29,29 +29,13 @@ enum CLIReport {
         var all: [FileDigest] = []
         var scannedRoots: [String] = []
         var missingRoots: [String] = []
-        let available = pipelines ?? UsageSource.allCases.map { source in
-            (
-                core: ScanCore(
-                    source: source,
-                    root: ScanCore.defaultRoot(for: source),
-                    cacheURL: ScanCore.defaultCacheURL(for: source)
-                ),
-                archive: HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
-            )
-        }
-        for source in UsageSource.allCases where wanted.contains(source) {
-            guard let pipeline = available.first(where: { $0.core.source == source }) else { continue }
+        let available = pipelines ?? UsageEngine.defaultPipelines()
+        for pipeline in available where wanted.contains(pipeline.core.source) {
+            let source = pipeline.core.source
             let core = pipeline.core
-            guard FileManager.default.fileExists(atPath: core.root.path) else {
-                // A source the user explicitly asked for must not be skipped quietly.
-                if explicitSource == source {
-                    return .failure(
-                        message: "no \(source.displayName) data at \(core.root.path)\n",
-                        code: 1
-                    )
-                }
-                missingRoots.append("no \(source.displayName) data at \(core.root.path)")
-                continue
+            let hasRoot = FileManager.default.fileExists(atPath: core.root.path)
+            if !hasRoot {
+                missingRoots.append("no \(source.displayName) data at \(core.root.path); retained history is included")
             }
             scannedRoots.append(core.root.path)
             let cache = core.loadCache()
@@ -73,19 +57,21 @@ enum CLIReport {
                     archive.save(archiveCache)
                 }
             }
-            all += result.digests.values
+            all += result.digests.values.map { digest in
+                var d = digest
+                d.profileId = core.profileId ?? source.rawValue
+                return d
+            }
         }
-        guard !scannedRoots.isEmpty else {
+        guard !scannedRoots.isEmpty, !all.isEmpty || missingRoots.isEmpty else {
             return .failure(
                 message: "no session data found:\n  \(missingRoots.joined(separator: "\n  "))\n",
                 code: 1
             )
         }
-        if wanted.contains(.claude), includeHistory,
-           let history = StatsCacheImport.historyDigest(
-               transcriptDigests: all.filter { $0.source == .claude }
-           ) {
-            all.append(history)
+        if wanted.contains(.claude), includeHistory {
+            let profiles = available.map { SourceProfile(id: $0.core.profileId ?? $0.core.source.rawValue, name: "", source: $0.core.source, rootPath: $0.core.root.path) }
+            all += StatsCacheImport.historyDigests(profiles: profiles, transcriptDigests: all)
         }
         return .success(digests: all, notes: missingRoots)
     }
@@ -138,6 +124,43 @@ enum CLIReport {
             }
         }
 
+        var filter = ReportFilter()
+        filter.calendarMonth = arguments.contains("--calendar-month")
+        for flag in ["--project", "--model", "--view", "--from", "--to"] {
+            switch value(of: flag) {
+            case .absent: continue
+            case .missingValue:
+                FileHandle.standardError.write(Data("missing value for \(flag)\n".utf8)); return 2
+            case .value(let raw):
+                if flag == "--project" { filter.project = raw }
+                else if flag == "--model" { filter.model = raw }
+                else if flag == "--view" {
+                    let defaults = UserDefaults(suiteName: "com.clementmalige.tktracker") ?? .standard
+                    let views = defaults.data(forKey: "savedFilters").flatMap { try? JSONDecoder().decode([ReportFilter].self, from: $0) } ?? []
+                    guard let saved = views.first(where: { $0.name == raw || $0.id == raw }) else {
+                        FileHandle.standardError.write(Data("unknown saved view: \(raw)\n".utf8)); return 2
+                    }
+                    filter = saved
+                } else {
+                    let df = DateFormatter()
+                    df.calendar = Calendar(identifier: .gregorian)
+                    df.locale = Locale(identifier: "en_US_POSIX")
+                    df.dateFormat = "yyyy-MM-dd"; df.isLenient = false
+                    guard let date = df.date(from: raw), df.string(from: date) == raw else {
+                        FileHandle.standardError.write(Data("\(flag) requires YYYY-MM-DD\n".utf8)); return 2
+                    }
+                    filter.calendarMonth = false
+                    if flag == "--from" { filter.start = date }
+                    else { filter.end = Calendar.current.date(byAdding: .day, value: 1, to: date) }
+                }
+            }
+        }
+        if filter.start != nil || filter.end != nil {
+            guard let a = filter.start, let b = filter.end, b > a else {
+                FileHandle.standardError.write(Data("provide --from and --to with a valid inclusive date range\n".utf8)); return 2
+            }
+        }
+
         // Dispatched before the one-shot scan below: --watch keeps its own
         // incremental state, so scanning here first would do the whole job twice
         // (and write the cache twice) before the first frame.
@@ -155,7 +178,7 @@ enum CLIReport {
                 sources: wanted,
                 explicitSource: explicitSource,
                 includeHistory: !arguments.contains("--transcripts-only"),
-                range: range
+                range: range, filter: filter
             )
         }
 
@@ -178,14 +201,14 @@ enum CLIReport {
         }
 
         if arguments.contains("--csv") {
-            print(CSVExport.dailyByModel(digests: all, range: range ?? .all), terminator: "")
+            print(CSVExport.dailyByModel(digests: all, range: range ?? .all, filter: filter), terminator: "")
             return 0
         }
 
         if json {
             // Same plan and same encoder as the GUI export, so the two documents
             // are genuinely interchangeable rather than only claimed to be.
-            let stats = StatsBuilder.build(digests: all, range: range ?? .all, plan: appPlan())
+            let stats = StatsBuilder.build(digests: all, range: range ?? .all, plan: appPlan(), filter: filter, profiles: SourceProfile.load())
             do {
                 print(try stats.jsonDocument())
                 return 0
@@ -195,7 +218,7 @@ enum CLIReport {
             }
         }
 
-        printReport(digests: all, focus: range)
+        printReport(digests: all, focus: range, filter: filter)
         return 0
     }
 
@@ -248,7 +271,8 @@ enum CLIReport {
         sources: Set<UsageSource>,
         explicitSource: UsageSource?,
         includeHistory: Bool,
-        range: StatsRange?
+        range: StatsRange?,
+        filter: ReportFilter
     ) -> Int32 {
         // Only drive the terminal when there is one. Piping `--watch` into a file
         // or another process should produce plain frames, not ANSI escapes.
@@ -301,7 +325,7 @@ enum CLIReport {
                 FileHandle.standardError.write(Data(message.utf8))
                 return code
             case .success(let digests, _):
-                printReport(digests: digests, focus: range)
+                printReport(digests: digests, focus: range, filter: filter)
                 print("  watching — ctrl-c to stop")
             }
             // Sleep in slices so ctrl-C feels immediate rather than taking up to
@@ -325,9 +349,9 @@ enum CLIReport {
         let includeHistory: Bool
 
         private var pipelines: [(core: ScanCore, archive: HistoryArchive)] = []
-        private var digests: [UsageSource: [String: FileDigest]] = [:]
-        private var claims: [UsageSource: ClaimMap] = [:]
-        private var archives: [UsageSource: DigestCache] = [:]
+        private var digests: [String: [String: FileDigest]] = [:]
+        private var claims: [String: ClaimMap] = [:]
+        private var archives: [String: DigestCache] = [:]
         private var lastSave = Date()
         private var started = false
 
@@ -340,22 +364,11 @@ enum CLIReport {
         mutating func tick() -> ScanOutcome {
             if !started {
                 started = true
-                for source in UsageSource.allCases where sources.contains(source) {
-                    let core = ScanCore(
-                        source: source,
-                        root: ScanCore.defaultRoot(for: source),
-                        cacheURL: ScanCore.defaultCacheURL(for: source)
-                    )
-                    let archive = HistoryArchive(source: source, url: HistoryArchive.defaultURL(for: source))
-                    guard FileManager.default.fileExists(atPath: core.root.path) else {
-                        if explicitSource == source {
-                            return .failure(
-                                message: "no \(source.displayName) data at \(core.root.path)\n",
-                                code: 1
-                            )
-                        }
-                        continue
-                    }
+                let available = UsageEngine.defaultPipelines().filter { sources.contains($0.core.source) }
+                for pipeline in available {
+                    let core = pipeline.core
+                    let archive = pipeline.archive
+                    let source = core.profileId ?? core.source.rawValue
                     let cache = core.loadCache()
                     let archiveCache = archive.load()
                     var seeded = cache.digests
@@ -374,7 +387,7 @@ enum CLIReport {
             var all: [FileDigest] = []
             var dirty = false
             for pipeline in pipelines {
-                let source = pipeline.core.source
+                let source = pipeline.core.profileId ?? pipeline.core.source.rawValue
                 let result = pipeline.core.refreshed(
                     digests: digests[source] ?? [:],
                     claims: claims[source] ?? ClaimMap()
@@ -387,14 +400,18 @@ enum CLIReport {
                     archives[source] = updated
                     pipeline.archive.save(updated)
                 }
-                all += result.digests.values
+                all += result.digests.values.map { digest in
+                var d = digest
+                d.profileId = source
+                return d
+            }
             }
 
             // Same 15s throttle the app uses, so a long-running watch does not
             // rewrite megabytes on every tick.
             if dirty, Date().timeIntervalSince(lastSave) > 15 {
                 for pipeline in pipelines {
-                    let source = pipeline.core.source
+                    let source = pipeline.core.profileId ?? pipeline.core.source.rawValue
                     pipeline.core.saveCache(
                         digests: digests[source] ?? [:],
                         claims: claims[source] ?? ClaimMap()
@@ -403,20 +420,18 @@ enum CLIReport {
                 lastSave = Date()
             }
 
-            if sources.contains(.claude), includeHistory,
-               let history = StatsCacheImport.historyDigest(
-                   transcriptDigests: all.filter { $0.source == .claude }
-               ) {
-                all.append(history)
+            if sources.contains(.claude), includeHistory {
+                let profiles = pipelines.map { SourceProfile(id: $0.core.profileId ?? $0.core.source.rawValue, name: "", source: $0.core.source, rootPath: $0.core.root.path) }
+                all += StatsCacheImport.historyDigests(profiles: profiles, transcriptDigests: all)
             }
             return .success(digests: all, notes: [])
         }
     }
 
-    private static func printReport(digests: [FileDigest], focus: StatsRange?) {
+    private static func printReport(digests: [FileDigest], focus: StatsRange?, filter: ReportFilter = ReportFilter()) {
         let now = Date()
-        let ranges: [StatsRange] = focus.map { [$0] } ?? [.today, .week, .month, .all]
-        let stats = ranges.map { StatsBuilder.build(digests: digests, range: $0, now: now) }
+        let ranges: [StatsRange] = filter.interval(now: now, calendar: .current) != nil ? [focus ?? .all] : (focus.map { [$0] } ?? [.today, .week, .month, .all])
+        let stats = ranges.map { StatsBuilder.build(digests: digests, range: $0, now: now, filter: filter, profiles: SourceProfile.load()) }
 
         let present = Set(digests.map(\.source))
         let subject = present == [.claude] ? "Claude Code usage"
@@ -433,7 +448,7 @@ enum CLIReport {
         for s in stats {
             let t = s.totals
             let cache = "\(Format.tokens(t.cacheRead)) / \(Format.tokens(t.cacheWrite))"
-            print("  " + s.range.label.padded(10)
+            print("  " + s.rangeLabel.padded(10)
                 + Format.money(s.cost).padded(11)
                 + Format.tokens(t.total).padded(10)
                 + Format.tokens(t.input).padded(9)
@@ -443,6 +458,8 @@ enum CLIReport {
         }
 
         let reference = stats.last ?? StatsBuilder.build(digests: digests, range: .all, now: now)
+
+        if !reference.coverage.note.isEmpty { print("\n  \(reference.coverage.note)") }
 
         if let block = reference.block, block.isActive {
             let remaining = Format.duration(block.end.timeIntervalSince(now))
@@ -460,7 +477,7 @@ enum CLIReport {
             return (source.displayName, totals, reference.cost(for: source))
         }
         if sourceLines.count > 1 {
-            print("\n  By source — \(reference.range.label.lowercased())")
+            print("\n  By source — \(reference.rangeLabel.lowercased())")
             for (name, totals, cost) in sourceLines {
                 print("    " + name.padded(14) + Format.money(cost).padded(11)
                     + Format.tokens(totals.total).padded(10) + "\(totals.messages) msgs")
@@ -468,7 +485,7 @@ enum CLIReport {
         }
 
         if !reference.models.isEmpty {
-            print("\n  By model — \(reference.range.label.lowercased())")
+            print("\n  By model — \(reference.rangeLabel.lowercased())")
             for m in reference.models.prefix(8) {
                 let flag = m.hasPricing ? "" : "  (no pricing)"
                 print("    " + m.shortName.padded(14) + Format.money(m.cost).padded(11)
@@ -477,7 +494,7 @@ enum CLIReport {
         }
 
         if !reference.projects.isEmpty {
-            print("\n  By project — \(reference.range.label.lowercased()) (top 8)")
+            print("\n  By project — \(reference.rangeLabel.lowercased()) (top 8)")
             for p in reference.projects.prefix(8) {
                 print("    " + String(p.name.prefix(22)).padded(24) + Format.money(p.cost).padded(11)
                     + Format.tokens(p.totals.total).padded(10)
@@ -487,7 +504,7 @@ enum CLIReport {
 
         if reference.cacheSavings > 0.01 {
             print("\n  Prompt cache: \(Format.percent(reference.cacheHitRate)) of prompt tokens served from cache, "
-                + "saving ≈\(Format.money(reference.cacheSavings)) (\(reference.range.label.lowercased()))")
+                + "saving ≈\(Format.money(reference.cacheSavings)) (\(reference.rangeLabel.lowercased()))")
         }
 
         if let since = reference.dataSince {

@@ -136,7 +136,8 @@ struct BranchRow: Identifiable, Codable, Sendable {
     let totals: TokenTotals
     let cost: Double
     let lastActive: Date?
-    var id: String { "\(projectName)\u{1F}\(branch)" }
+    var projectId: String?
+    var id: String { "\(projectId ?? projectName)\u{1F}\(branch)" }
 }
 
 /// One weekday × hour-of-day cell of the activity heatmap.
@@ -206,6 +207,19 @@ struct DashboardStats: Codable, Sendable {
     /// Today's cost split by usage source.
     var todayCostBySource: [String: Double]
 
+    var reportFilter: ReportFilter?
+    var isTodayView: Bool { range == .today && reportFilter?.start == nil && reportFilter?.calendarMonth != true }
+    var rangeLabel: String {
+        if reportFilter?.calendarMonth == true { return "This calendar month" }
+        if let start = reportFilter?.start, let end = reportFilter?.end {
+            return start.formatted(date: .abbreviated, time: .omitted) + " – " + end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted)
+        }
+        return range.label
+    }
+    var coverage = PricingCoverage()
+    var previousPeriodCost: Double?
+    var accounts: [AccountUsage] = []
+
     func cost(for source: UsageSource) -> Double { costBySource[source.rawValue] ?? 0 }
     func totals(for source: UsageSource) -> TokenTotals { totalsBySource[source.rawValue] ?? TokenTotals() }
     func todayCost(for source: UsageSource) -> Double { todayCostBySource[source.rawValue] ?? 0 }
@@ -246,19 +260,29 @@ enum StatsBuilder {
         range: StatsRange,
         now: Date = Date(),
         calendar: Calendar = .current,
-        plan: UsagePlan = .none
+        plan: UsagePlan = .none,
+        filter: ReportFilter? = nil,
+        profiles: [SourceProfile] = []
     ) -> DashboardStats {
+        let digests = filter?.apply(to: digests) ?? digests
         let nowEpoch = now.timeIntervalSince1970
-        let rangeStart = range.start(now: now, calendar: calendar)?.timeIntervalSince1970
+        let interval = filter?.interval(now: now, calendar: calendar)
+        let rangeStart = interval?.start.timeIntervalSince1970 ?? range.start(now: now, calendar: calendar)?.timeIntervalSince1970
+        let rangeEnd = min(interval?.end.timeIntervalSince1970 ?? nowEpoch + 1, nowEpoch + 1)
+        let previousStart = rangeStart.map { $0 - (rangeEnd - $0) }
+        var previousCost = 0.0
+        var coverage = PricingCoverage(catalogUpdated: PricingCatalog.shared.updated)
+        var unpricedModels = Set<String>()
+        var byModelCost: [String: Double] = [:]
         let todayStart = calendar.startOfDay(for: now).timeIntervalSince1970
 
         let chartUnit: ChartUnit
-        if range == .today {
+        if (interval == nil && range == .today) || (interval.map { $0.duration <= 86400 } ?? false) {
             chartUnit = .hour
         } else {
             // Buckets are sorted per digest, so the first one is each file's earliest.
             let earliest = digests.compactMap { $0.buckets.first?.hour }.min().map(Double.init)
-            let spanDays = (nowEpoch - (rangeStart ?? earliest ?? nowEpoch)) / 86_400
+            let spanDays = (rangeEnd - (rangeStart ?? earliest ?? nowEpoch)) / 86_400
             chartUnit = spanDays > 120 ? .week : .day
         }
 
@@ -273,7 +297,7 @@ enum StatsBuilder {
             var cwd: String?
             var cwdTs: Double = -1
         }
-        struct BranchKey: Hashable { let project: String; let branch: String }
+        struct BranchKey: Hashable { let project: String; let branch: String; let name: String }
         struct BranchAgg {
             var totals = TokenTotals()
             var cost = 0.0
@@ -322,10 +346,12 @@ enum StatsBuilder {
             var inRangeCost = 0.0
             var todayDigestTotals = TokenTotals()
             var todayDigestCost = 0.0
-            if digest.path == StatsCacheImport.syntheticPath { hasEstimatedHistory = true }
+            if digest.path.hasPrefix(StatsCacheImport.syntheticPath) { hasEstimatedHistory = true }
 
-            for bucket in digest.buckets {
-                let bucketCost = Pricing.cost(model: bucket.model, totals: bucket.totals)
+            var seenBranches = Set<String>()
+            for bucket in digest.accountingBuckets {
+                guard bucket.epoch <= nowEpoch + 1 else { continue }
+                let bucketCost = bucket.cost
                 allTimeCost += bucketCost
                 minHour = min(minHour ?? bucket.hour, bucket.hour)
                 allModelIds.insert(bucket.model)
@@ -335,32 +361,55 @@ enum StatsBuilder {
                 hourAgg.cost += bucketCost
                 hourAll[bucket.hour] = hourAgg
 
-                if Double(bucket.hour) >= weekStart { rollingWeekCost += bucketCost }
-                if Double(bucket.hour) >= monthStart { rollingMonthCost += bucketCost }
+                if bucket.epoch >= weekStart { rollingWeekCost += bucketCost }
+                if bucket.epoch >= monthStart { rollingMonthCost += bucketCost }
 
-                if Double(bucket.hour) >= todayStart {
+                if bucket.epoch >= todayStart {
                     todayTotals.add(bucket.totals)
                     todayCost += bucketCost
                     todayDigestTotals.add(bucket.totals)
                     todayDigestCost += bucketCost
                 }
 
-                if let rangeStart, Double(bucket.hour) < rangeStart { continue }
+                if let rangeStart, let previousStart, bucket.epoch >= previousStart, bucket.epoch < rangeStart { previousCost += bucketCost }
+                if let rangeStart, bucket.epoch < rangeStart { continue }
+                if bucket.epoch >= rangeEnd { continue }
+                if PricingCatalog.shared.pricing(for: bucket.model, context: bucket.context) == nil {
+                    coverage.unpricedTokens = coverage.unpricedTokens.saturatingAdding(bucket.totals.total)
+                    coverage.unpricedRequests = coverage.unpricedRequests.saturatingAdding(bucket.totals.messages)
+                    unpricedModels.insert(bucket.model)
+                }
+                if bucket.context?.tier == .unknown || bucket.context == nil {
+                    coverage.assumedTierRequests = coverage.assumedTierRequests.saturatingAdding(bucket.totals.messages)
+                }
+                if bucket.timestamp == nil { coverage.legacyRequests = coverage.legacyRequests.saturatingAdding(bucket.totals.messages) }
+                if digest.path.hasPrefix(StatsCacheImport.syntheticPath) { coverage.estimatedTokens = coverage.estimatedTokens.saturatingAdding(bucket.totals.total) }
+                byModelCost[bucket.model, default: 0] += bucketCost
+                if let branch = bucket.branch ?? (digest.records == nil ? digest.gitBranch : nil), !branch.isEmpty {
+                    let name = Self.projectName(cwd: digest.cwd, projectDir: digest.projectDir).name
+                    let key = BranchKey(project: digest.projectKey, branch: branch, name: name)
+                    var b = branchAgg[key] ?? BranchAgg()
+                    b.totals.add(bucket.totals)
+                    b.cost += bucketCost
+                    if seenBranches.insert(branch).inserted { b.sessions += 1 }
+                    b.lastTs = max(b.lastTs ?? bucket.epoch, bucket.epoch)
+                    branchAgg[key] = b
+                }
 
                 inRange.add(bucket.totals)
                 inRangeCost += bucketCost
                 rangeTotals.add(bucket.totals)
                 rangeCost += bucketCost
                 byModel[bucket.model, default: TokenTotals()].add(bucket.totals)
-                savings += Pricing.cacheSavings(model: bucket.model, totals: bucket.totals)
+                savings += Pricing.cacheSavings(model: bucket.model, totals: bucket.totals, context: bucket.context)
 
                 let bucketDate: Date
                 if chartUnit == .hour {
-                    bucketDate = Date(timeIntervalSince1970: Double(bucket.hour))
-                } else if let cached = bucketDateCache[bucket.hour] {
+                    bucketDate = calendar.dateInterval(of: .hour, for: Date(timeIntervalSince1970: bucket.epoch))!.start
+                } else if let cached = bucketDateCache[Int64(bucket.epoch / 60)] {
                     bucketDate = cached
                 } else {
-                    let date = Date(timeIntervalSince1970: Double(bucket.hour))
+                    let date = Date(timeIntervalSince1970: bucket.epoch)
                     let start: Date
                     switch chartUnit {
                     case .week:
@@ -369,7 +418,7 @@ enum StatsBuilder {
                     default:
                         start = calendar.startOfDay(for: date)
                     }
-                    bucketDateCache[bucket.hour] = start
+                    bucketDateCache[Int64(bucket.epoch / 60)] = start
                     bucketDate = start
                 }
                 let shortName: String
@@ -388,13 +437,13 @@ enum StatsBuilder {
                 // Heatmap cells are local weekday × local hour, so the grid reads
                 // as "when do I actually work" rather than as UTC.
                 let heatKey: HeatKey
-                if let cached = heatKeyCache[bucket.hour] {
+                if let cached = heatKeyCache[Int64(bucket.epoch / 60)] {
                     heatKey = cached
                 } else {
-                    let date = Date(timeIntervalSince1970: Double(bucket.hour))
+                    let date = Date(timeIntervalSince1970: bucket.epoch)
                     let parts = calendar.dateComponents([.weekday, .hour], from: date)
                     heatKey = HeatKey(weekday: parts.weekday ?? 1, hour: parts.hour ?? 0)
-                    heatKeyCache[bucket.hour] = heatKey
+                    heatKeyCache[Int64(bucket.epoch / 60)] = heatKey
                 }
                 var heat = heatAgg[heatKey] ?? HeatAgg()
                 heat.cost += bucketCost
@@ -412,7 +461,7 @@ enum StatsBuilder {
             if inRange.messages > 0 || isLive {
                 sessionRows.append(sessionRow(digest: digest, totals: inRange, cost: inRangeCost, isLive: isLive))
 
-                var agg = projectAgg[digest.projectDir] ?? ProjectAgg()
+                var agg = projectAgg[digest.projectKey] ?? ProjectAgg()
                 agg.totals.add(inRange)
                 agg.cost += inRangeCost
                 agg.sessions += 1
@@ -421,18 +470,9 @@ enum StatsBuilder {
                     agg.cwd = cwd
                     agg.cwdTs = digest.lastTs ?? 0
                 }
-                projectAgg[digest.projectDir] = agg
+                projectAgg[digest.projectKey] = agg
 
-                if let branch = digest.gitBranch, !branch.isEmpty {
-                    let (name, _) = Self.projectName(cwd: digest.cwd, projectDir: digest.projectDir)
-                    let key = BranchKey(project: name, branch: branch)
-                    var bagg = branchAgg[key] ?? BranchAgg()
-                    bagg.totals.add(inRange)
-                    bagg.cost += inRangeCost
-                    bagg.sessions += 1
-                    if let last = digest.lastTs { bagg.lastTs = max(bagg.lastTs ?? last, last) }
-                    branchAgg[key] = bagg
-                }
+
             }
 
             if isLive {
@@ -476,9 +516,9 @@ enum StatsBuilder {
                     shortName: ModelFamily.shortName(for: model),
                     family: ModelFamily(model: model),
                     totals: totals,
-                    cost: Pricing.cost(model: model, totals: totals),
+                    cost: byModelCost[model] ?? 0,
                     share: 0,
-                    hasPricing: Pricing.pricing(for: model) != nil
+                    hasPricing: !unpricedModels.contains(model)
                 )
             }
             .map { row in
@@ -556,7 +596,7 @@ enum StatsBuilder {
             ? PlanGauge(
                 used: rollingWeekCost,
                 limit: plan.weeklyLimit,
-                windowEnd: Date(timeIntervalSince1970: nowEpoch + 86_400)
+                windowEnd: nil
             )
             : nil
         let planValueMultiple: Double? = plan.tracksValue && plan.monthlyCost > 0
@@ -571,16 +611,17 @@ enum StatsBuilder {
             .map { key, agg in
                 BranchRow(
                     branch: key.branch,
-                    projectName: key.project,
+                    projectName: key.name,
                     sessions: agg.sessions,
                     totals: agg.totals,
                     cost: agg.cost,
-                    lastActive: agg.lastTs.map { Date(timeIntervalSince1970: $0) }
+                    lastActive: agg.lastTs.map { Date(timeIntervalSince1970: $0) },
+                    projectId: key.project
                 )
             }
             .sorted { $0.cost != $1.cost ? $0.cost > $1.cost : $0.totals.total > $1.totals.total }
 
-        return DashboardStats(
+        var result = DashboardStats(
             range: range,
             generatedAt: now,
             totals: rangeTotals,
@@ -622,6 +663,11 @@ enum StatsBuilder {
             totalsBySource: totalsBySource,
             todayCostBySource: todayCostBySource
         )
+        result.reportFilter = filter
+        result.accounts = AccountUsage.build(profiles: profiles, digests: digests, now: now)
+        result.coverage = coverage
+        result.previousPeriodCost = rangeStart == nil ? nil : previousCost
+        return result
     }
 
     /// Today's projected end-of-day total.
