@@ -1,5 +1,16 @@
 # Changelog
 
+
+## 2.0.0 — release candidate
+
+- Add account profiles, independent plans, local Codex quota snapshots and optional CLI-backed account refresh.
+- Add GPT-6 Astra, GPT-5.6 variants and current Claude models with explicit cache, tier and context pricing; preserve variant identities and surface partial estimates.
+- Preserve request timestamps and branch changes; fix fractional-timezone boundaries, future-record filtering, overflow and CSV escaping.
+- Add custom dates, calendar-month and saved filters, previous-period comparisons, session details, agent trees and model-price simulation.
+- Add monthly/project budgets, spending forecasts, opt-in quota and anomaly alerts, usage backups and metadata retention.
+- Add Xcode universal packaging, extracted App Intents verification and isolated packaged smoke checks. Production publication now requires signing and notarization credentials.
+
+
 All notable changes to TkTracker are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

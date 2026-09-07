@@ -89,13 +89,13 @@ enum BudgetNotifier {
     /// The current 5-hour block is nearly used up. Keyed by the block's start so
     /// each block can warn once.
     @MainActor
-    static func notifyBlockNearLimit(gauge: PlanGauge, blockStart: Date, now: Date = Date()) {
-        guard gauge.limit > 0, gauge.isNearLimit, !gauge.isOverLimit else { return }
+    static func notifyBlockNearLimit(gauge: PlanGauge, blockStart: Date, now: Date = Date(), accountId: String = "default") {
+        guard gauge.limit > 0, gauge.isNearLimit else { return }
         let window = ISO8601DateFormatter().string(from: blockStart)
         post(
-            key: "blockNotifiedStart",
+            key: "blockNotifiedStart-\(accountId)",
             window: window,
-            identifier: "tktracker-block-\(window)",
+            identifier: "tktracker-block-\(accountId)-\(window)",
             title: String(localized: "notify.block.title", defaultValue: "5-hour block nearly used up"),
             body: "\(Format.money(gauge.used)) of your \(Format.money(gauge.limit)) block allowance used, "
                 + "\(Format.money(gauge.remaining)) left."
@@ -104,19 +104,41 @@ enum BudgetNotifier {
 
     /// The rolling weekly plan allowance is nearly used up, keyed by ISO week.
     @MainActor
-    static func notifyWeeklyNearLimit(gauge: PlanGauge, now: Date = Date()) {
-        guard gauge.limit > 0, gauge.isNearLimit, !gauge.isOverLimit else { return }
+    static func notifyWeeklyNearLimit(gauge: PlanGauge, now: Date = Date(), accountId: String = "default") {
+        guard gauge.limit > 0, gauge.isNearLimit else { return }
         var calendar = Calendar(identifier: .iso8601)
         calendar.timeZone = .current
         let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
         let window = "\(components.yearForWeekOfYear ?? 0)-W\(components.weekOfYear ?? 0)"
         post(
-            key: "weeklyNotifiedWeek",
+            key: "weeklyNotifiedWeek-\(accountId)",
             window: window,
-            identifier: "tktracker-weekly-\(window)",
+            identifier: "tktracker-weekly-\(accountId)-\(window)",
             title: String(localized: "notify.weekly.title", defaultValue: "Weekly plan limit approaching"),
             body: "\(Format.percent(gauge.fraction)) of this week's allowance used — "
                 + "\(Format.money(gauge.remaining)) left."
         )
     }
+    @MainActor static func notifyMonthly(_ progress: BudgetProgress) {
+        guard progress.fraction >= progress.rule.warningFraction else { return }
+        let level = progress.fraction >= 1 ? "exceeded" : "approaching"
+        post(key: "monthly-\(progress.id)-\(level)", window: progress.cycle,
+             identifier: "tktracker-monthly-\(progress.id)-\(progress.cycle)-\(level)",
+             title: "\(progress.rule.name): budget \(level)",
+             body: "\(Format.money(progress.used)) of \(Format.money(progress.rule.monthlyLimit)) API-equivalent value.")
+    }
+    @MainActor static func notifyAnomaly(multiple: Double) {
+        let day = dayKey(Date())
+        post(key: "unusualSpendDay", window: day, identifier: "tktracker-unusual-\(day)",
+             title: "Today's usage is unusually high", body: "API-equivalent value is \(Format.multiple(multiple)) your recent typical active day.")
+    }
+    @MainActor static func notifyQuota(_ quota: QuotaSnapshot, accountId: String) {
+        for window in quota.windows where window.usedPercent >= 80 {
+            let cycle = String(Int(window.resetsAt.timeIntervalSince1970))
+            post(key: "quota-\(accountId)-\(window.name)", window: cycle,
+                 identifier: "tktracker-quota-\(accountId)-\(window.name)-\(cycle)",
+                 title: "Codex quota nearly used", body: "\(Int(window.remainingPercent))% remaining. Resets \(window.resetsAt.formatted()).")
+        }
+    }
+
 }

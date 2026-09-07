@@ -56,14 +56,14 @@ jobs:
       - name: Swift version
         run: swift --version
 
-      - name: Build (release)
-        run: swift build -c release
+      - name: Check generated pricing catalog
+        run: python3 Scripts/generate_pricing.py --check
 
       - name: Run tests
         run: swift test
 
       - name: Build zipped app bundle
-        run: make zip
+        run: make zip smoke APP_BUILDER=xcode
 
       # upload-artifact strips executable bits from bare directories, so
       # upload the ditto-made zip to keep the .app launchable.

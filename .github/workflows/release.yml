@@ -38,7 +38,8 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::MACOS_CERTIFICATE_P12 not set — building ad-hoc signed, not notarized."
+            echo "::error::Production releases require Developer ID and Apple notarization credentials. Use CI artifacts for an unsigned candidate."
+            exit 1
           fi
 
       - name: Import Developer ID certificate
@@ -81,17 +82,13 @@ jobs:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          make notarize \
+          make notarize APP_BUILDER=xcode \
             SIGN_IDENTITY="$SIGN_IDENTITY" \
             APPLE_ID="$APPLE_ID" TEAM_ID="$TEAM_ID" APP_PASSWORD="$APP_PASSWORD"
           # Strict: the release notes below assert this build is notarized and
           # stapled, so an artifact that cannot prove it must fail the job rather
           # than be published with a false claim.
-          make verify-signature-strict
-
-      - name: Build unsigned zip
-        if: steps.signing.outputs.enabled != 'true'
-        run: make zip
+          make verify-signature-strict smoke
 
       # Runs even when the build fails: otherwise the Developer ID private key
       # and its keychain password outlive the job on a self-hosted or reused

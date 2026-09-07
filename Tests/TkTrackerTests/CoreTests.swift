@@ -874,8 +874,8 @@ final class CoreTests {
     }
 
     @Test func contextWindows() {
-        #expect(Pricing.contextWindow(for: "claude-opus-4-8") == 200_000)
-        #expect(Pricing.contextWindow(for: "claude-fable-5") == 200_000)
+        #expect(Pricing.contextWindow(for: "claude-opus-4-8") == 1_000_000)
+        #expect(Pricing.contextWindow(for: "claude-fable-5") == 1_000_000)
         #expect(Pricing.contextWindow(for: "claude-sonnet-4-5[1m]") == 1_000_000)
     }
 

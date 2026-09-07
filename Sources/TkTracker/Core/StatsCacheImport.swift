@@ -89,6 +89,17 @@ enum StatsCacheImport {
         return digest
     }
 
+    static func historyDigests(profiles: [SourceProfile], transcriptDigests: [FileDigest]) -> [FileDigest] {
+        profiles.filter { $0.enabled && $0.source == .claude }.compactMap { profile in
+            let own = transcriptDigests.filter { ($0.profileId ?? $0.source.rawValue) == profile.id }
+            guard var digest = historyDigest(statsURL: profile.root.deletingLastPathComponent().appendingPathComponent("stats-cache.json"), transcriptDigests: own) else { return nil }
+            digest.profileId = profile.id
+            digest.path = syntheticPath + "/" + profile.id
+            digest.sessionId += "-" + profile.id
+            return PrivacyPolicy.load().apply(digest)
+        }
+    }
+
     // MARK: - Lifetime usage splits
 
     private static let aggregateKey = ""

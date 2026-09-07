@@ -17,6 +17,7 @@ enum UsageSource: String, Codable, Sendable, CaseIterable, Identifiable {
 
     /// Terminal command that reopens a session, for the "copy resume" action.
     func resumeCommand(sessionId: String) -> String {
+        let sessionId = sessionId.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") } ? sessionId : "'" + sessionId.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
         switch self {
         case .claude: return "claude --resume \(sessionId)"
         case .codex: return "codex resume \(sessionId)"

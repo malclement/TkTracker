@@ -76,7 +76,7 @@ final class UsageStore {
         var set = Set<UsageSource>()
         if trackClaude { set.insert(.claude) }
         if trackCodex { set.insert(.codex) }
-        return set
+        return set.intersection(Set(profiles.filter(\.enabled).map(\.source)))
     }
 
     /// Sources the UI is currently showing: the scope, clipped to what's
@@ -98,16 +98,103 @@ final class UsageStore {
 
     /// Daily spend threshold in USD; 0 disables.
     var dailyBudget: Double {
-        didSet { UserDefaults.standard.set(dailyBudget, forKey: "dailyBudget") }
+        didSet {
+            if !dailyBudget.isFinite || dailyBudget < 0 { dailyBudget = oldValue; return }
+            UserDefaults.standard.set(dailyBudget, forKey: "dailyBudget")
+        }
     }
 
     /// Subscription plan, for the allowance gauges and the value multiple.
     /// Defaults to `.none` so no limit is ever shown that the user didn't set.
-    var plan: UsagePlan {
+    var profiles: [SourceProfile] {
         didSet {
-            plan.save()
+            SourceProfile.save(profiles)
+            if oldValue.map({ "\($0.id)|\($0.rootPath)|\($0.enabled)" }) == profiles.map({ "\($0.id)|\($0.rootPath)|\($0.enabled)" }) { rebuild(); return }
+            quotaSnapshots.removeAll()
+            guard started else { return }
+            Task {
+                apply(await engine.configure(profiles: profiles))
+                startWatchers()
+                await refreshNow()
+            }
+        }
+    }
+    // Compatibility for aggregate intents: an allowance belongs to one account.
+    var plan: UsagePlan {
+        let visible = profiles.filter { $0.enabled && visibleSources.contains($0.source) }
+        return visible.count == 1 ? visible[0].plan : .none
+    }
+    var reportFilter = ReportFilter() { didSet { rebuild() } }
+    var savedFilters: [ReportFilter] = []
+    var selectedSession: String?
+    var budgetRules: [BudgetRule] = [] {
+        didSet {
+            if let data = try? JSONEncoder().encode(budgetRules) { UserDefaults.standard.set(data, forKey: "budgetRules") }
             rebuild()
         }
+    }
+    var budgetProgress: [BudgetProgress] = []
+    var anomalyAlerts = UserDefaults.standard.bool(forKey: "anomalyAlerts") {
+        didSet { UserDefaults.standard.set(anomalyAlerts, forKey: "anomalyAlerts") }
+    }
+    var privacyPolicy = PrivacyPolicy.load() {
+        didSet {
+            if let data = try? JSONEncoder().encode(privacyPolicy) { UserDefaults.standard.set(data, forKey: "privacyPolicy") }
+            Task { do { apply(try await engine.applyPrivacy(privacyPolicy)) } catch { operationError = error.localizedDescription } }
+        }
+    }
+    var quotaAlertsEnabled = UserDefaults.standard.bool(forKey: "quotaAlertsEnabled") {
+        didSet { UserDefaults.standard.set(quotaAlertsEnabled, forKey: "quotaAlertsEnabled") }
+    }
+    func exportBackup() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "TkTracker-backup.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { do { try await engine.backup().write(to: url) } catch { operationError = error.localizedDescription } }
+    }
+    func restoreBackup() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do { let backup = try ArchiveBackup.read(url); apply(try await engine.restore(backup)); await refreshNow() }
+            catch { operationError = error.localizedDescription }
+        }
+    }
+    var quotaSnapshots: [String: QuotaSnapshot] = [:]
+    var quotaError: String?
+    var quotaRefreshing = false
+    var liveQuotasEnabled = UserDefaults.standard.bool(forKey: "liveQuotasEnabled") {
+        didSet {
+            UserDefaults.standard.set(liveQuotasEnabled, forKey: "liveQuotasEnabled")
+            if liveQuotasEnabled { Task { await refreshQuotas() } }
+        }
+    }
+    var codexExecutable = UserDefaults.standard.string(forKey: "codexExecutable") ?? "/opt/homebrew/bin/codex" {
+        didSet { UserDefaults.standard.set(codexExecutable, forKey: "codexExecutable") }
+    }
+    func refreshQuotas() async {
+        guard liveQuotasEnabled, !quotaRefreshing else { return }
+        quotaRefreshing = true
+        defer { quotaRefreshing = false }
+        quotaError = nil
+        for profile in profiles where profile.enabled && profile.source == .codex {
+            do {
+                let snapshot = try await CodexQuotaClient.fetch(executable: URL(fileURLWithPath: codexExecutable), configRoot: profile.root.deletingLastPathComponent())
+                guard liveQuotasEnabled else { return }
+                quotaSnapshots[profile.id] = snapshot
+            } catch { quotaError = error.localizedDescription }
+        }
+    }
+    var operationError: String?
+    var allDigests: [FileDigest] { digests }
+    var allModels: [String] { Array(Set(digests.flatMap { $0.buckets.map(\.model) })).sorted() }
+
+    func saveCurrentFilter() {
+        var copy = reportFilter
+        copy.id = UUID().uuidString
+        savedFilters.append(copy)
+        if let data = try? JSONEncoder().encode(savedFilters) { UserDefaults.standard.set(data, forKey: "savedFilters") }
     }
 
     /// Opt-in release check. Off by default; see `UpdateChecker`.
@@ -149,11 +236,11 @@ final class UsageStore {
         }
     }
 
-    let dataRoot = ScanCore.defaultRoot()
-    let codexDataRoot = ScanCore.defaultRoot(for: .codex)
+    var dataRoot: URL { profiles.first { $0.source == .claude }?.root ?? ScanCore.defaultRoot() }
+    var codexDataRoot: URL { profiles.first { $0.source == .codex }?.root ?? ScanCore.defaultRoot(for: .codex) }
 
     private var digests: [FileDigest] = []
-    private var historyDigest: FileDigest?
+    private var historyDigests: [FileDigest] = []
     private let engine = UsageEngine()
     private var watchers: [ProjectsWatcher] = []
     private var started = false
@@ -172,7 +259,9 @@ final class UsageStore {
         trackCodex = d.object(forKey: "trackCodex") as? Bool ?? true
         sourceScope = d.string(forKey: "sourceScope").flatMap(SourceScope.init(rawValue:)) ?? .all
         dailyBudget = d.double(forKey: "dailyBudget")
-        plan = UsagePlan.load(from: d)
+        profiles = SourceProfile.load(from: d)
+        if let data = d.data(forKey: "budgetRules"), let rules = try? JSONDecoder().decode([BudgetRule].self, from: data) { budgetRules = rules }
+        if let data = d.data(forKey: "savedFilters"), let saved = try? JSONDecoder().decode([ReportFilter].self, from: data) { savedFilters = saved }
         checksForUpdates = d.bool(forKey: "checksForUpdates") // absent = false = opted out
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -220,20 +309,12 @@ final class UsageStore {
 
     /// True when at least one source the user is viewing has a data directory.
     var visibleDataDirExists: Bool {
-        visibleSources.contains { source in
-            switch source {
-            case .claude: return dataDirExists
-            case .codex: return codexDataDirExists
-            }
-        }
+        profiles.contains { $0.enabled && visibleSources.contains($0.source) && FileManager.default.fileExists(atPath: $0.root.path) }
     }
 
     /// (name, path) rows for the empty state — the tracked roots being watched.
     var trackedRoots: [(name: String, path: String)] {
-        var out: [(String, String)] = []
-        if trackClaude { out.append((UsageSource.claude.displayName, dataRoot.path)) }
-        if trackCodex { out.append((UsageSource.codex.displayName, codexDataRoot.path)) }
-        return out
+        profiles.filter { $0.enabled && trackedSources.contains($0.source) }.map { ($0.name, $0.root.path) }
     }
 
     func startIfNeeded() async {
@@ -246,6 +327,7 @@ final class UsageStore {
 
         await refreshNow()
         startWatchers()
+        if liveQuotasEnabled { Task { await refreshQuotas() } }
         await updateChecker.checkIfDue(enabled: checksForUpdates)
 
         minuteLoop = Task { [weak self] in
@@ -258,8 +340,8 @@ final class UsageStore {
 
     private func startWatchers() {
         for watcher in watchers { watcher.stop() }
-        watchers = trackedSources.sorted { $0.rawValue < $1.rawValue }.map { source in
-            let root = source == .claude ? dataRoot : codexDataRoot
+        watchers = profiles.filter { $0.enabled && trackedSources.contains($0.source) }.map { profile in
+            let root = profile.root
             let watcher = ProjectsWatcher(path: root.path) { [weak self] in
                 Task { @MainActor in self?.scheduleRefresh() }
             }
@@ -318,6 +400,12 @@ final class UsageStore {
             unreadableFiles: report.unreadable,
             cacheWriteFailed: report.cacheWriteFailed
         )
+        for digest in digests {
+            if let quota = digest.quota {
+                let id = digest.profileId ?? digest.source.rawValue
+                if quota.observedAt > (quotaSnapshots[id]?.observedAt ?? .distantPast) { quotaSnapshots[id] = quota }
+            }
+        }
         rebuildHistoryDigest()
         rebuild()
     }
@@ -325,9 +413,7 @@ final class UsageStore {
     /// The imported pre-cleanup estimate is Claude-only; its cutoff must come
     /// from Claude transcripts alone or older Codex data would clip it.
     private func rebuildHistoryDigest() {
-        historyDigest = StatsCacheImport.historyDigest(
-            transcriptDigests: digests.filter { $0.source == .claude }
-        )
+        historyDigests = StatsCacheImport.historyDigests(profiles: profiles, transcriptDigests: digests)
     }
 
     func flush() async {
@@ -351,6 +437,7 @@ final class UsageStore {
 
     private func minuteTick() async {
         minuteCount += 1
+        if liveQuotasEnabled { Task { await refreshQuotas() } }
         // A watcher can start unarmed when its directory and every acceptable
         // parent are missing (Codex never installed, say). Retry cheaply so the
         // source goes live when it appears instead of waiting for a relaunch.
@@ -367,61 +454,24 @@ final class UsageStore {
     private func rebuild() {
         claudePresent = dataDirExists || digests.contains { $0.source == .claude }
         codexPresent = codexDataDirExists || digests.contains { $0.source == .codex }
-        stats = StatsBuilder.build(digests: visibleDigests(), range: range, plan: plan)
+        stats = StatsBuilder.build(digests: visibleDigests(), range: range, plan: plan, filter: reportFilter, profiles: profiles.filter { visibleSources.contains($0.source) })
         colorScale = ModelColorScale(palette: stats.modelPalette)
         trackedTodayCost = trackedTodayCostNow()
+        let tracked = digests.filter { trackedSources.contains($0.source) }
+        budgetProgress = BudgetAnalysis.progress(rules: budgetRules, digests: tracked)
+        for progress in budgetProgress { BudgetNotifier.notifyMonthly(progress) }
+        if anomalyAlerts, let multiple = BudgetAnalysis.unusualSpend(digests: tracked, multiplier: 3) { BudgetNotifier.notifyAnomaly(multiple: multiple) }
+        for (id, quota) in quotaSnapshots where quotaAlertsEnabled && !quota.isStale() { BudgetNotifier.notifyQuota(quota, accountId: id) }
         BudgetNotifier.notifyIfCrossed(todayCost: trackedTodayCost, budget: dailyBudget)
         // Alerts follow the same rule as the budget: they are standing
         // commitments about real spend, so a transient view filter must never
         // quiet one. `stats` is filtered by `sourceScope`; these are not.
-        let alerts = trackedPlanAlerts()
-        if let gauge = alerts.block, let start = alerts.blockStart {
-            BudgetNotifier.notifyBlockNearLimit(gauge: gauge, blockStart: start)
-        }
-        if let gauge = alerts.weekly {
-            BudgetNotifier.notifyWeeklyNearLimit(gauge: gauge)
-        }
-    }
-
-    /// Plan allowances over every tracked source, ignoring the view filter.
-    ///
-    /// Walks the tracked digests directly rather than running a second full
-    /// `StatsBuilder.build`, which would double the cost of every rebuild.
-    private func trackedPlanAlerts() -> (block: PlanGauge?, blockStart: Date?, weekly: PlanGauge?) {
-        guard plan.tracksBlock || plan.tracksWeekly else { return (nil, nil, nil) }
-        let now = Date()
-        let nowEpoch = now.timeIntervalSince1970
-        let weekStart = nowEpoch - 7 * 86_400
-
-        var hourAll: [Int64: (TokenTotals, Double)] = [:]
-        var weekCost = 0.0
-        for digest in digests where trackedSources.contains(digest.source) {
-            for bucket in digest.buckets {
-                let cost = Pricing.cost(model: bucket.model, totals: bucket.totals)
-                if Double(bucket.hour) >= weekStart { weekCost += cost }
-                guard plan.tracksBlock else { continue }
-                var entry = hourAll[bucket.hour] ?? (TokenTotals(), 0)
-                entry.0.add(bucket.totals)
-                entry.1 += cost
-                hourAll[bucket.hour] = entry
+        for account in AccountUsage.build(profiles: profiles.filter { trackedSources.contains($0.source) }, digests: digests) {
+            if let gauge = account.block, let end = gauge.windowEnd {
+                BudgetNotifier.notifyBlockNearLimit(gauge: gauge, blockStart: end.addingTimeInterval(-5 * 3600), accountId: account.id)
             }
+            if let gauge = account.weekly { BudgetNotifier.notifyWeeklyNearLimit(gauge: gauge, accountId: account.id) }
         }
-
-        var block: PlanGauge?
-        var blockStart: Date?
-        if plan.tracksBlock,
-           let info = StatsBuilder.currentBlock(hourAll: hourAll, nowEpoch: nowEpoch) {
-            block = PlanGauge(used: info.cost, limit: plan.blockLimit, windowEnd: info.end)
-            blockStart = info.start
-        }
-        let weekly = plan.tracksWeekly
-            ? PlanGauge(
-                used: weekCost,
-                limit: plan.weeklyLimit,
-                windowEnd: Date(timeIntervalSince1970: nowEpoch + 86_400)
-            )
-            : nil
-        return (block, blockStart, weekly)
     }
 
     /// Today's cost over all tracked sources, ignoring the view filter (the
@@ -432,10 +482,7 @@ final class UsageStore {
         var cost = 0.0
         for digest in digests where trackedSources.contains(digest.source) {
             // Buckets are sorted by hour; today's sit at the tail.
-            for bucket in digest.buckets.reversed() {
-                if Double(bucket.hour) < todayStart { break }
-                cost += Pricing.cost(model: bucket.model, totals: bucket.totals)
-            }
+            for bucket in digest.accountingBuckets where bucket.epoch >= todayStart && bucket.epoch <= Date().timeIntervalSince1970 { cost += bucket.cost }
         }
         return cost
     }
@@ -443,7 +490,7 @@ final class UsageStore {
     private func visibleDigests() -> [FileDigest] {
         let visible = visibleSources
         var all = digests.filter { visible.contains($0.source) }
-        if includeHistory, visible.contains(.claude), let historyDigest { all.append(historyDigest) }
+        if includeHistory, visible.contains(.claude) { all += historyDigests }
         return all
     }
 
@@ -458,10 +505,8 @@ final class UsageStore {
         let wanted = scope.sources.intersection(trackedSources)
         let visible = wanted.isEmpty ? trackedSources : wanted
         var selected = digests.filter { visible.contains($0.source) }
-        if includeHistory, visible.contains(.claude), let historyDigest {
-            selected.append(historyDigest)
-        }
-        return StatsBuilder.build(digests: selected, range: range, plan: plan)
+        if includeHistory, visible.contains(.claude) { selected += historyDigests }
+        return StatsBuilder.build(digests: selected, range: range, plan: plan, profiles: profiles.filter { visible.contains($0.source) })
     }
 
     /// Recompute everything derived from the current digests without rescanning.
@@ -472,7 +517,7 @@ final class UsageStore {
     }
 
     func csvForCurrentRange() -> String {
-        CSVExport.dailyByModel(digests: visibleDigests(), range: range)
+        CSVExport.dailyByModel(digests: visibleDigests(), range: range, filter: reportFilter)
     }
 
     /// The full dashboard stats — the same document `report --json` emits, via

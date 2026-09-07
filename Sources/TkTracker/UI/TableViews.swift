@@ -221,12 +221,21 @@ struct SessionsView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
                     }
                 }
+                Button("Session details") { store.selectedSession = row.path }
                 Button("Copy Resume Command") {
                     copyToPasteboard(row.source.resumeCommand(sessionId: row.sessionId))
                 }
                 Button("Copy Session ID") {
                     copyToPasteboard(row.sessionId)
                 }
+            }
+        } primaryAction: { ids in
+            store.selectedSession = rows.first { ids.contains($0.id) }?.path
+        }
+        .onChange(of: selection) { _, _ in }
+        .sheet(isPresented: Binding(get: { store.selectedSession != nil }, set: { if !$0 { store.selectedSession = nil } })) {
+            if let digest = store.allDigests.first(where: { $0.path == store.selectedSession }) {
+                SessionDetailView(digest: digest, allDigests: store.allDigests)
             }
         }
         .overlay {

@@ -1,7 +1,9 @@
 PREFIX ?= /Applications
 APP = dist/TkTracker.app
-BIN = .build/release/TkTracker
-RESOURCE_BUNDLE = .build/release/TkTracker_TkTracker.bundle
+APP_BUILDER ?= swiftpm
+BUILD_CONFIGURATION ?= release
+BIN = .build/$(BUILD_CONFIGURATION)/TkTracker
+RESOURCE_BUNDLE = .build/$(BUILD_CONFIGURATION)/TkTracker_TkTracker.bundle
 ENTITLEMENTS = Support/TkTracker.entitlements
 VERSION = $(shell /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Support/Info.plist)
 
@@ -43,7 +45,7 @@ test:
 	swift test
 
 release:
-	swift build -c release
+	swift build -c $(BUILD_CONFIGURATION)
 
 icon: dist/AppIcon.icns
 
@@ -52,6 +54,15 @@ dist/AppIcon.icns: Scripts/MakeIcon.swift
 	swift Scripts/MakeIcon.swift dist/AppIcon.iconset
 	iconutil -c icns dist/AppIcon.iconset -o dist/AppIcon.icns
 
+ifeq ($(APP_BUILDER),xcode)
+app: dist/AppIcon.icns
+	python3 Scripts/generate_xcode.py
+	xcodebuild -project dist/TkTracker.xcodeproj -scheme TkTracker -configuration Release \
+		-derivedDataPath dist/DerivedData SYMROOT="$(CURDIR)/dist/xcode" CODE_SIGNING_ALLOWED=NO build
+	ditto dist/xcode/Release/TkTracker.app $(APP)
+	codesign --force --options runtime --timestamp --entitlements $(ENTITLEMENTS) --sign "$(SIGN_IDENTITY)" $(APP)
+	@$(MAKE) --no-print-directory verify-resources verify-appintents
+else
 app: release dist/AppIcon.icns
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
@@ -79,6 +90,8 @@ ifeq ($(SIGN_IDENTITY),-)
 	@echo "  NOTE: ad-hoc signed. Fine on this Mac; on any other one the user"
 	@echo "  must clear the quarantine flag by hand. For distribution, build"
 	@echo "  with SIGN_IDENTITY set and run 'make notarize'."
+endif
+
 endif
 
 zip: app
@@ -141,7 +154,7 @@ verify-signature:
 # CI gate after notarization. Unlike verify-signature above, nothing here is
 # tolerated: the release notes assert the build is notarized and stapled, so an
 # artifact that cannot prove it must fail the job rather than be published.
-verify-signature-strict: verify-resources
+verify-signature-strict: verify-resources verify-appintents
 	codesign --verify --deep --strict --verbose=2 $(APP)
 	codesign --display --verbose=4 $(APP) 2>&1 | grep -q 'flags=.*runtime' \
 		|| { echo "error: hardened runtime flag not set" >&2; exit 1; }
@@ -159,3 +172,10 @@ run: app
 
 clean:
 	rm -rf .build dist
+
+.PHONY: verify-appintents smoke
+verify-appintents:
+	python3 Scripts/verify_appintents.py "$(APP)"
+
+smoke: verify-resources
+	TKTRACKER_NO_PRICING_OVERRIDES=1 $(APP)/Contents/MacOS/TkTracker --smoke

@@ -30,7 +30,7 @@ enum SelfCheck {
         }
 
         // The catalog must be constructible without trapping, whatever happens.
-        let catalog = PricingCatalog()
+        let catalog = PricingCatalog(overrides: [:])
         print("fromBundle   \(catalog.loadedFromBundle)")
         if catalog.pricing(for: "claude-opus-4-8") == nil {
             failures.append("pricing lookup returned nil for a known model")
@@ -46,7 +46,7 @@ enum SelfCheck {
         )
         let probes = [
             "claude-opus-4-8", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-fable-5",
-            "gpt-5.5", "gpt-5.3-codex", "codex-mini-latest", "some-unknown-model",
+            "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "gpt-5.5", "gpt-5.3-codex", "codex-mini-latest", "some-unknown-model",
         ]
         for id in probes where catalog.pricing(for: id) != fallback.pricing(for: id) {
             failures.append("pricing.json disagrees with the compiled-in table for \(id)")
@@ -67,9 +67,9 @@ enum SelfCheck {
         // Deliberately not a failure: on a Command-Line-Tools toolchain the
         // condition can never be satisfied, and a build that cannot pass its own
         // gate teaches people to ignore the gate.
-        let metadata = Bundle.main.bundleURL.appendingPathComponent("Contents/Metadata.appintents")
+        let metadata = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Metadata.appintents")
         if FileManager.default.fileExists(atPath: metadata.path) {
-            print("appintents   registered")
+            print("appintents   metadata present (runtime discovery requires macOS registration)")
         } else {
             print("appintents   INERT — no Metadata.appintents, Shortcuts will not register")
             print("             (expected on a SwiftPM build; do not document Shortcuts support)")

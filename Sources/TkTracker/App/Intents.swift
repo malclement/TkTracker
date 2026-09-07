@@ -1,33 +1,8 @@
 import AppIntents
 import Foundation
 
-// MARK: - Shortcuts / Spotlight entry points
-//
-// ⚠️ CURRENTLY INERT. These compile and are correct, but nothing in this file
-// ever runs on a SwiftPM-built app.
-//
-// AppIntents discovery is driven by a `Metadata.appintents` bundle inside the
-// app, generated at build time by Xcode's `appintentsmetadataprocessor`. SwiftPM
-// does not run that tool, and it is not present in a Command-Line-Tools-only
-// install — so the bundle is absent, no intent is discovered, and AppKit logs
-// `Error registering app with intents framework … Code=4097` at launch.
-//
-// 1.5.0 shipped documenting Shortcuts support on the strength of this compiling.
-// It had never worked. The code is kept because it is the finished half of the
-// feature and costs nothing to carry; see docs/app-intents.md for what would be
-// needed to switch it on, and `TkTracker --selfcheck` for whether a given build
-// actually registers.
-//
-// Do not re-document Shortcuts support without checking `--selfcheck` on a
-// packaged build first.
-
-/// Shortcuts / Spotlight entry points (see the note above — not currently
-/// registered).
-///
-/// These run in the app's own process and read through the same scan caches the
-/// menu bar uses, so a shortcut and the popover can never disagree. Nothing here
-/// touches the network, and no intent exposes session titles or project paths —
-/// only aggregate figures.
+/// Aggregate Shortcuts entry points. Xcode packaging extracts the metadata;
+/// SwiftPM-only builds report missing metadata through --selfcheck.
 struct TodaySpendIntent: AppIntent {
     static var title: LocalizedStringResource = "Get today's spend"
     static var description = IntentDescription(
@@ -78,7 +53,7 @@ struct RangeSpendIntent: AppIntent {
 struct BlockRemainingIntent: AppIntent {
     static var title: LocalizedStringResource = "Get current 5-hour block"
     static var description = IntentDescription(
-        "Returns how much has been spent in the current 5-hour billing block and how long is left.",
+        "Returns how much has been spent in the current estimated 5-hour activity block and how long is left.",
         categoryName: "Usage"
     )
     static var openAppWhenRun = false
@@ -159,9 +134,11 @@ extension SourceScope: AppEnum {
 enum IntentSupport {
     enum IntentError: LocalizedError {
         case noData(String)
+        case incompletePricing
         var errorDescription: String? {
             switch self {
             case .noData(let message): return message
+            case .incompletePricing: return "Some usage has no verified price. Open TkTracker for the partial value and coverage details."
             }
         }
     }
@@ -182,19 +159,24 @@ enum IntentSupport {
     static func stats(range: StatsRange, scope: SourceScope) async throws -> DashboardStats {
         let store = UsageStore.shared
         if store.hasScanned {
-            return store.stats(range: range, scope: scope)
+            let stats = store.stats(range: range, scope: scope)
+            guard !stats.coverage.isIncomplete else { throw IntentError.incompletePricing }
+            return stats
         }
         // Cold launch: scan off the main actor, and do not persist — an intent is
         // a read, and the app proper owns cache writes.
-        let sources = scope.sources
+        let sources = scope.sources.intersection(store.trackedSources)
+        let includeHistory = store.includeHistory
         let outcome = await Task.detached(priority: .userInitiated) {
-            CLIReport.scan(sources: sources, persist: false)
+            CLIReport.scan(sources: sources, includeHistory: includeHistory, persist: false)
         }.value
         switch outcome {
         case .failure(let message, _):
             throw IntentError.noData(message.trimmingCharacters(in: .whitespacesAndNewlines))
         case .success(let digests, _):
-            return StatsBuilder.build(digests: digests, range: range, plan: store.plan)
+            let stats = StatsBuilder.build(digests: digests, range: range, profiles: store.profiles.filter { sources.contains($0.source) })
+            guard !stats.coverage.isIncomplete else { throw IntentError.incompletePricing }
+            return stats
         }
     }
 }

@@ -14,7 +14,7 @@ struct TokenTotals: Codable, Sendable, Equatable {
     var total: Int64 {
         input.saturatingAdding(output).saturatingAdding(cacheRead).saturatingAdding(cacheWrite)
     }
-    var isEmpty: Bool { total == 0 && messages == 0 }
+    var isEmpty: Bool { total == 0 && messages == 0 && webSearches == 0 }
 
     mutating func add(_ other: TokenTotals) {
         input = input.saturatingAdding(other.input)
@@ -29,13 +29,13 @@ struct TokenTotals: Codable, Sendable, Equatable {
     /// Exact inverse of `add` for amounts previously added (used to reverse a
     /// provisional attribution); clamps like everything else on this type.
     mutating func subtract(_ other: TokenTotals) {
-        input = input.saturatingAdding(-other.input)
-        output = output.saturatingAdding(-other.output)
-        cacheRead = cacheRead.saturatingAdding(-other.cacheRead)
-        cacheWrite5m = cacheWrite5m.saturatingAdding(-other.cacheWrite5m)
-        cacheWrite1h = cacheWrite1h.saturatingAdding(-other.cacheWrite1h)
-        messages = messages.saturatingAdding(-other.messages)
-        webSearches = webSearches.saturatingAdding(-other.webSearches)
+        input = input.saturatingSubtracting(other.input)
+        output = output.saturatingSubtracting(other.output)
+        cacheRead = cacheRead.saturatingSubtracting(other.cacheRead)
+        cacheWrite5m = cacheWrite5m.saturatingSubtracting(other.cacheWrite5m)
+        cacheWrite1h = cacheWrite1h.saturatingSubtracting(other.cacheWrite1h)
+        messages = messages.saturatingSubtracting(other.messages)
+        webSearches = webSearches.saturatingSubtracting(other.webSearches)
     }
 }
 
@@ -43,6 +43,11 @@ struct TokenTotals: Codable, Sendable, Equatable {
 /// cache); arithmetic on them clamps at the integer bounds instead of trapping
 /// so one corrupt or crafted line can never crash a scan.
 extension FixedWidthInteger {
+    func saturatingSubtracting(_ other: Self) -> Self {
+        let (result, overflow) = subtractingReportingOverflow(other)
+        return overflow ? (other < 0 ? .max : .min) : result
+    }
+
     func saturatingAdding(_ other: Self) -> Self {
         let (sum, overflow) = addingReportingOverflow(other)
         return overflow ? (other < 0 ? .min : .max) : sum
@@ -65,6 +70,12 @@ struct HourBucket: Codable, Sendable, Equatable {
     var hour: Int64 // unix epoch seconds floored to the hour
     var model: String
     var totals: TokenTotals
+    var timestamp: Double?
+    var branch: String?
+    var context: PricingContext?
+    var contextTokens: Int64?
+    var epoch: Double { timestamp ?? Double(hour) }
+    var cost: Double { Pricing.cost(model: model, totals: totals, context: context) }
 }
 
 struct HourModelKey: Hashable, Sendable {
@@ -108,6 +119,16 @@ struct FileDigest: Codable, Sendable, Identifiable, Equatable {
     /// File no longer on disk; totals are retained as history.
     var missing: Bool = false
 
+    /// Optional for backward compatibility. Old archives keep their exact token
+    /// totals; only surviving transcripts are re-read to recover request timing.
+    var records: [HourBucket]?
+    var parentSessionId: String?
+    var markers: [SessionMarker]?
+    var serviceTier: ServiceTier?
+    var parserRevision: Int?
+    var profileId: String?
+    var quota: QuotaSnapshot?
+
     var buckets: [HourBucket] = []
     /// Tail of recently seen (messageId:requestId) keys so incremental parses
     /// keep deduping streamed duplicates across the resume boundary.
@@ -118,10 +139,13 @@ struct FileDigest: Codable, Sendable, Identifiable, Equatable {
         case path, size, mtime, offset, sessionId, projectDir, cwd, gitBranch
         case aiTitle, fallbackTitle, firstTs, lastTs, lastModel, lastContextTokens
         case contextWindow, pendingBuckets, missing, buckets, recentKeys
+        case records, parentSessionId, markers, serviceTier, parserRevision, profileId, quota
     }
 
     var id: String { path }
     var title: String? { aiTitle ?? fallbackTitle }
+    var accountingBuckets: [HourBucket] { records ?? buckets }
+    var projectKey: String { cwd.map { URL(fileURLWithPath: $0).standardizedFileURL.path } ?? projectDir }
 
     var totals: TokenTotals {
         var t = TokenTotals()
@@ -130,7 +154,7 @@ struct FileDigest: Codable, Sendable, Identifiable, Equatable {
     }
 
     var cost: Double {
-        buckets.reduce(0) { $0 + Pricing.cost(model: $1.model, totals: $1.totals) }
+        accountingBuckets.reduce(0) { $0 + $1.cost }
     }
 }
 

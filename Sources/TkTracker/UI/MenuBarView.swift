@@ -21,6 +21,9 @@ struct MenuBarView: View {
                 .frame(height: 140)
             } else {
                 hero(stats)
+                if stats.coverage.isIncomplete {
+                    Text("Partial API value · some models have no price").font(.caption2).foregroundStyle(.orange).padding(.horizontal, 16)
+                }
                 HourSparkline(points: stats.hourly24, currentHour: currentHour)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)

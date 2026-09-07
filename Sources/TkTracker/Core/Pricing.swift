@@ -43,8 +43,9 @@ enum Pricing {
         PricingCatalog.shared.pricing(for: model)
     }
 
-    static func cost(model: String, totals: TokenTotals) -> Double {
-        guard let p = pricing(for: model) else { return 0 }
+    @inline(never)
+    static func cost(model: String, totals: TokenTotals, context: PricingContext? = nil) -> Double {
+        guard let p = PricingCatalog.shared.pricing(for: model, context: context) else { return 0 }
         let mtok = 1_000_000.0
         var usd = Double(totals.input) / mtok * p.input
         usd += Double(totals.output) / mtok * p.output
@@ -57,10 +58,10 @@ enum Pricing {
 
     /// What the same input volume would have cost with no prompt cache, minus what it actually cost.
     /// Positive means the cache saved money.
-    static func cacheSavings(model: String, totals: TokenTotals) -> Double {
-        guard let p = pricing(for: model) else { return 0 }
+    static func cacheSavings(model: String, totals: TokenTotals, context: PricingContext? = nil) -> Double {
+        guard let p = PricingCatalog.shared.pricing(for: model, context: context) else { return 0 }
         let mtok = 1_000_000.0
-        let promptTokens = Double(totals.input + totals.cacheRead + totals.cacheWrite5m + totals.cacheWrite1h)
+        let promptTokens = Double(totals.input) + Double(totals.cacheRead) + Double(totals.cacheWrite5m) + Double(totals.cacheWrite1h)
         let uncached = promptTokens / mtok * p.input
         let actual = Double(totals.input) / mtok * p.input
             + Double(totals.cacheRead) / mtok * p.cacheRead
@@ -104,23 +105,7 @@ enum ModelFamily: String, CaseIterable, Codable, Sendable {
     /// Short display name for a full model id, e.g. "claude-opus-4-8" -> "Opus 4.8",
     /// "gpt-5.3-codex" -> "Codex 5.3".
     static func shortName(for model: String) -> String {
-        let family = ModelFamily(model: model)
-        switch family {
-        case .other:
-            return model
-        case .gpt:
-            let m = model.lowercased()
-            let version = dottedVersion(m).map { trimmedVersion($0) }
-            let base: String
-            if m.contains("codex"), m.contains("mini") { base = "Codex Mini" }
-            else if m.contains("codex") { base = "Codex" }
-            else { base = version == nil ? "GPT" : "GPT-" }
-            guard let version else { return base }
-            return base.hasSuffix("-") ? base + version : "\(base) \(version)"
-        default:
-            let version = versionDigits(model).prefix(2).joined(separator: ".")
-            return version.isEmpty ? family.rawValue : "\(family.rawValue) \(version)"
-        }
+        ModelIdentity.displayName(model)
     }
 
     /// Numeric generation for ordering within a family: "claude-opus-4-8" -> 4.8,
