@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import simd
+import Darwin
 @testable import TkTracker
 
 @Suite("Floating workshops")
@@ -109,6 +110,59 @@ struct WorkshopTests {
         #expect(reader.state == .completed)
         reader.applyClaudeStatus("idle", at: Date.distantFuture)
         #expect(reader.state == .completed)
+    }
+
+    @Test func claudeProcessStartUsesUTCWithoutATimezoneSuffix() throws {
+        let parsed = try #require(WorkshopProcessProbe.claudeProcessStart("Mon Sep 14 13:31:57 2026"))
+        #expect(parsed.timeIntervalSince1970 == JSONLParser.epoch(fromISO8601: "2026-09-14T13:31:57Z"))
+        #expect(WorkshopProcessProbe.claudeProcessStart("invalid") == nil)
+    }
+
+    @Test func claudePresenceAcceptsUTCStartAndRejectsReusedPID() throws {
+        var info = proc_bsdinfo()
+        #expect(proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout.size(ofValue: info))) > 0)
+        let actual = Date(timeIntervalSince1970: Double(info.pbi_start_tvsec))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        #expect(WorkshopProcessProbe.presence(pid: getpid(), startedAt: Date(), processStart: formatter.string(from: actual)) == true)
+        #expect(WorkshopProcessProbe.presence(pid: getpid(), startedAt: Date(), processStart: formatter.string(from: actual.addingTimeInterval(-3600))) == false)
+    }
+
+    @Test func claudeSessionFindsTranscriptBeforeUsageScanAndCloses() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tktracker-claude-workshops-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projects = root.appendingPathComponent("projects")
+        let metadata = root.appendingPathComponent("sessions")
+        let cwd = "/Users/test/my_project.v2/é😀"
+        let project = projects.appendingPathComponent(CodexParser.encodeProjectDir(cwd))
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
+        let id = UUID().uuidString.lowercased()
+        let session = metadata.appendingPathComponent("test.json")
+        try JSONSerialization.data(withJSONObject: ["pid": getpid(), "sessionId": id, "cwd": cwd,
+            "startedAt": Date().timeIntervalSince1970 * 1000, "pidDomain": "darwin"])
+            .write(to: session)
+        let transcript = project.appendingPathComponent(id + ".jsonl")
+        let event: [String: Any] = ["type": "assistant", "timestamp": "2026-09-14T13:30:00Z",
+            "message": ["model": "claude-opus-4-8", "stop_reason": "end_turn", "content": []]]
+        var data = try JSONSerialization.data(withJSONObject: event)
+        data.append(10)
+        try data.write(to: transcript)
+        let profile = SourceProfile(id: "test", name: "Test", source: .claude, rootPath: projects.path)
+        let monitor = WorkshopMonitor()
+        let snapshot = await monitor.snapshot(profiles: [profile], digests: [], keepsTitles: false)
+        #expect(snapshot.agents.count == 1)
+        #expect(snapshot.agents.first?.sessionID == id)
+        #expect(snapshot.agents.first?.state == .completed)
+        #expect(snapshot.agents.first?.model == "claude-opus-4-8")
+        #expect(!snapshot.hasUncertainty)
+        try FileManager.default.removeItem(at: session)
+        let firstMiss = await monitor.snapshot(profiles: [profile], digests: [], keepsTitles: false)
+        #expect(firstMiss.agents.count == 1)
+        let closed = await monitor.snapshot(profiles: [profile], digests: [], keepsTitles: false)
+        #expect(closed.agents.isEmpty)
     }
 
     @Test func unknownAndMalformedEventsDoNotInventActivity() throws {

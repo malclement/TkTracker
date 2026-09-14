@@ -3,6 +3,7 @@
 
 ## 2.0.0 — release candidate
 
+- RC2 (build 8): fix Claude session detection outside UTC and transcript discovery for project paths containing punctuation or Unicode.
 - Add Floating Workshops: a native 3D page with a workshop for each loaded session, animated agent avatars and attached subagent platforms.
 - Add focused and overview modes, a persistent session/team list, drag-to-orbit, automatic camera framing, project/provider filters and an explicit Needs you state.
 - Observe local Codex and Claude Code activity without hooks or provider configuration changes. Idle/completed sessions remain visible; reliably observed closure removes them. Codex can retain loaded sessions after tabs close.

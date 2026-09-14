@@ -58,13 +58,20 @@ enum WorkshopProcessProbe {
         }
         guard info.pbi_uid == getuid(), info.pbi_status != SZOMB else { return false }
         let actual = Date(timeIntervalSince1970: Double(info.pbi_start_tvsec))
-        if let processStart {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
-            if let expected = formatter.date(from: processStart) { return abs(actual.timeIntervalSince(expected)) < 2 }
+        if let processStart, let expected = claudeProcessStart(processStart) {
+            return abs(actual.timeIntervalSince(expected)) < 2
         }
         return actual <= startedAt.addingTimeInterval(2)
+    }
+
+    static func claudeProcessStart(_ value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        // Claude records procStart in UTC, without a timezone suffix. Using
+        // the Mac's local zone rejects live sessions outside UTC as reused PIDs.
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        return formatter.date(from: value)
     }
 }
 
@@ -128,7 +135,7 @@ actor WorkshopMonitor {
                     guard alive else { continue }
                     let key = WorkshopAgent.key(profile: profile.id, source: .claude, session: meta.sessionId)
                     let digest = lookup[key]
-                    let candidate = digest?.path ?? profile.root.appendingPathComponent(meta.cwd.replacingOccurrences(of: "/", with: "-")).appendingPathComponent(meta.sessionId + ".jsonl").path
+                    let candidate = digest?.path ?? profile.root.appendingPathComponent(CodexParser.encodeProjectDir(meta.cwd)).appendingPathComponent(meta.sessionId + ".jsonl").path
                     // Keep configured accounts isolated even when a metadata directory is shared.
                     guard ScanCore.canonicalPath(URL(fileURLWithPath: candidate)).hasPrefix(root + "/") else { continue }
                     usedPaths.insert(candidate)

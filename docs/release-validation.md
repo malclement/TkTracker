@@ -1,7 +1,13 @@
 # Release validation
 
-Release candidate: 2.0.0 (build 7), including Floating Workshops. Production
+Release candidate: 2.0.0 RC2 (build 8), including Floating Workshops. Production
 publication requires every gate below.
+
+RC2 validation: all 166 local tests pass, including UTC process identity,
+transcript discovery before a usage scan and Claude session closure. The corrected
+process check recognizes the open local Claude session. RC previews use the
+universal CI artifact and are explicitly ad-hoc signed prereleases; the stable
+release workflow excludes `-rc.*` tags and retains its signing requirements.
 
 September 14 workshop validation: 163 local tests pass, the generated pricing
 catalog is current, and the SwiftPM app passes packaged resource, signature
