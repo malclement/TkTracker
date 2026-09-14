@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    # RC previews use the verified CI artifact; this workflow notarizes stable releases.
+    tags: ["v*", "!v*-rc.*"]
   workflow_dispatch:
 
 permissions:
@@ -131,6 +132,10 @@ jobs:
           echo "sha256: $DIGEST"
           NOTES="$RUNNER_TEMP/release-notes.md"
           {
+            if [ -f "docs/releases/$VERSION.md" ]; then
+              cat "docs/releases/$VERSION.md"
+              echo
+            fi
             echo '> [!NOTE]'
             echo '> Signed with a Developer ID and notarized by Apple — open it normally.'
             echo

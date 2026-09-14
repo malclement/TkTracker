@@ -3,6 +3,12 @@ import Foundation
 @main
 enum Main {
     static func main() {
+#if DEBUG
+        if Bundle.main.bundleIdentifier == "com.clementmalige.tktracker.workshops.preview" {
+            WorkshopPreviewApp.main()
+            return
+        }
+#endif
         let args = Array(CommandLine.arguments.dropFirst())
         switch args.first {
         case "report", "usage":
@@ -13,6 +19,10 @@ enum Main {
             exit(SmokeCheck.run())
         case "--selfcheck":
             exit(SelfCheck.run())
+#if DEBUG
+        case "--workshops-preview":
+            WorkshopPreviewApp.main()
+#endif
         case "--help", "-h", "help":
             print("""
             TkTracker — Claude Code & Codex token & cost tracker for macOS

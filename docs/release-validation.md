@@ -1,6 +1,21 @@
 # Release validation
 
-Release candidate: 2.0.0. Production publication requires every gate below.
+Release candidate: 2.0.0 RC2 (build 8), including Floating Workshops. Production
+publication requires every gate below.
+
+RC2 validation: all 166 local tests pass, including UTC process identity,
+transcript discovery before a usage scan and Claude session closure. The corrected
+process check recognizes the open local Claude session. RC previews use the
+universal CI artifact and are explicitly ad-hoc signed prereleases; the stable
+release workflow excludes `-rc.*` tags and retains its signing requirements.
+
+September 14 workshop validation: 163 local tests pass, the generated pricing
+catalog is current, and the SwiftPM app passes packaged resource, signature
+integrity and smoke checks. Native UI checks cover focused/overview navigation,
+team selection, orbiting, input/completion/closure demo states and both themes.
+The local signature is ad-hoc; these checks do not replace signed universal
+candidate and Shortcuts runtime validation. GitHub repository signing secrets
+and a local Developer ID signing identity are still absent on September 14.
 
 1. `python3 Scripts/generate_pricing.py --check` and `make test` pass.
 2. CI pins Xcode 26.3 on macOS 15. `make zip smoke APP_BUILDER=xcode` builds both Apple Silicon and Intel,
