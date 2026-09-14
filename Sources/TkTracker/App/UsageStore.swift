@@ -23,6 +23,7 @@ final class UsageStore {
     private(set) var colorScale = ModelColorScale(palette: [])
     private(set) var isScanning = false
     private(set) var hasScanned = false
+    let workshops = WorkshopStore()
     /// Result of the last scan — surfaced in the UI when something went wrong,
     /// and dumped verbatim by Settings → Copy diagnostics.
     private(set) var scanHealth = ScanHealth()

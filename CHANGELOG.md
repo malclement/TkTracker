@@ -3,6 +3,11 @@
 
 ## 2.0.0 — release candidate
 
+- Add Floating Workshops: a native 3D page with a workshop for each loaded session, animated agent avatars and attached subagent platforms.
+- Add focused and overview modes, a persistent session/team list, drag-to-orbit, automatic camera framing, project/provider filters and an explicit Needs you state.
+- Observe local Codex and Claude Code activity without hooks or provider configuration changes. Idle/completed sessions remain visible; reliably observed closure removes them. Codex can retain loaded sessions after tabs close.
+- Prevent delayed tool results from restarting completed/interrupted agent animations; preserve unavailable states when session presence cannot be confirmed.
+
 - Add account profiles, independent plans, local Codex quota snapshots and optional CLI-backed account refresh.
 - Add GPT-6 Astra, GPT-5.6 variants and current Claude models with explicit cache, tier and context pricing; preserve variant identities and surface partial estimates.
 - Preserve request timestamps and branch changes; fix fractional-timezone boundaries, future-record filtering, overflow and CSV escaping.

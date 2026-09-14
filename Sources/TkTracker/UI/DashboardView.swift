@@ -14,13 +14,14 @@ extension ChartUnit {
 }
 
 enum DashboardSection: String, CaseIterable, Identifiable {
-    case overview, projects, branches, sessions, models
+    case overview, workshops, projects, branches, sessions, models
 
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
     var icon: String {
         switch self {
         case .overview: return "gauge.with.dots.needle.50percent"
+        case .workshops: return "cube.transparent"
         case .projects: return "folder"
         case .branches: return "arrow.triangle.branch"
         case .sessions: return "bubble.left.and.text.bubble.right"
@@ -43,6 +44,7 @@ struct DashboardView: View {
         } detail: {
             switch store.dashboardSection ?? .overview {
             case .overview: OverviewView()
+            case .workshops: WorkshopView()
             case .projects: ProjectsView()
             case .branches: BranchesView()
             case .sessions: SessionsView()

@@ -131,6 +131,10 @@ jobs:
           echo "sha256: $DIGEST"
           NOTES="$RUNNER_TEMP/release-notes.md"
           {
+            if [ -f "docs/releases/$VERSION.md" ]; then
+              cat "docs/releases/$VERSION.md"
+              echo
+            fi
             echo '> [!NOTE]'
             echo '> Signed with a Developer ID and notarized by Apple — open it normally.'
             echo
