@@ -1,6 +1,16 @@
 # Changelog
 
 
+## [2.1.0] - 2026-09-25
+
+Ad-hoc signed (not notarized): see the release notes to open it the first time.
+
+- Workshops: one building per project. Every session open on a project shares its workshop, and the session list groups sessions under their project.
+- Workshops scale to large teams. A building grows along the street two desks at a time, up to 12 desks. Leads get desks before subagents, desks never move when someone joins or leaves, and anyone beyond 12 appears on a "+N" plaque on the nameplate. Buildings line the street, six per page.
+- A room layout that makes sense: desks along the back wall and in a middle row; a lounge by the door with the couch against the side wall facing into the room, a rug, a coffee machine and a whiteboard. Wood floors are laid as planks, other floors as tiles.
+- A waiting lead watches one of its own subagents first.
+- The whole lot fits at a larger zoom in smaller windows. The mailbox no longer sits under the nameplate, and the fence is lower.
+
 ## [2.0.2] - 2026-09-25
 
 Ad-hoc signed (not notarized): see the release notes to open it the first time.
