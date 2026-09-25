@@ -190,6 +190,14 @@ extension PixelCanvas {
     mutating func faceI(_ iso: Iso, i: Double, j0: Double, j1: Double, k0: Double, k1: Double, _ c: PixelColor) {
         poly([iso.p(i, j0, k1), iso.p(i, j1, k1), iso.p(i, j1, k0), iso.p(i, j0, k0)], c)
     }
+    /// A flat oval shadow where something stands on the ground.
+    mutating func groundShadow(cx: Double, cy: Double, rx: Double, ry: Double, alpha: UInt8 = 64) {
+        for y in Int(cy - ry)...Int(cy + ry) {
+            for x in Int(cx - rx)...Int(cx + rx) where pow((Double(x) + 0.5 - cx) / rx, 2) + pow((Double(y) + 0.5 - cy) / ry, 2) <= 1 {
+                plot(x, y, PixelColor(0x1C1030, alpha: alpha))
+            }
+        }
+    }
     /// A soft contact shadow under furniture.
     mutating func shadow(_ iso: Iso, i: Double, j: Double, w: Double, d: Double) {
         flat(iso, i: i - 0.06, j: j - 0.02, w: w + 0.16, d: d + 0.16, PixelColor(0x1C1030, alpha: 60))
@@ -202,7 +210,7 @@ enum PixelFont {
     private static let glyphs: [Character: String] = [
         "A": ".x.x.xxxxx.xx.x", "B": "xx.x.xxx.x.xxx.", "C": ".xxx..x..x...xx", "D": "xx.x.xx.xx.xxx.", "E": "xxxx..xx.x..xxx",
         "F": "xxxx..xx.x..x..", "G": ".xxx..x.xx.x.xx", "H": "x.xx.xxxxx.xx.x", "I": "xxx.x..x..x.xxx", "J": "..x..x..xx.x.x.",
-        "K": "x.xx.xxx.x.xx.x", "L": "x..x..x..x..xxx", "M": "x.xxxxxxxx.xx.x", "N": "xx.x.xx.xx.xx.x", "O": ".x.x.xx.xx.x.x.",
+        "K": "x.xxx.x..xx.x.x", "L": "x..x..x..x..xxx", "M": "x.xxxxxxxx.xx.x", "N": "xx.x.xx.xx.xx.x", "O": ".x.x.xx.xx.x.x.",
         "P": "xx.x.xxx.x..x..", "Q": ".x.x.xx.xxx..xx", "R": "xx.x.xxx.x.xx.x", "S": ".xxx...x...xxx.", "T": "xxx.x..x..x..x.",
         "U": "x.xx.xx.xx.xxxx", "V": "x.xx.xx.xx.x.x.", "W": "x.xx.xxxxxxxx.x", "X": "x.xx.x.x.x.xx.x", "Y": "x.xx.x.x..x..x.",
         "Z": "xxx..x.x.x..xxx", "0": "xxxx.xx.xx.xxxx", "1": ".x.xx..x..x.xxx", "2": "xx...x.x.x..xxx", "3": "xx...x.x...xxx.",

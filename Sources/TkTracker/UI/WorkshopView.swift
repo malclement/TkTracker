@@ -147,18 +147,7 @@ struct WorkshopView: View {
             }
             VStack {
                 HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(following ? (selectedIsland?.lead.projectName ?? "Your lot") : "Whole lot")
-                            .font(.system(size: 19, weight: .semibold, design: .rounded))
-                        if following, let agent = selected {
-                            Label(agent.state.label, systemImage: agent.state.symbol)
-                                .font(.caption.weight(.medium)).foregroundStyle(agent.state.tint)
-                        } else {
-                            Text("\(islands.count) sessions · \(islands.flatMap(\.subagents).count) subagents")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if demo { Text(WorkshopDemo.caption(step: demoStep)).font(.caption).foregroundStyle(.secondary) }
-                    }
+                    if !islands.isEmpty { sceneTitle }
                     Spacer()
                     Button {
                         following.toggle(); zoomStep = 0; cameraReset += 1
@@ -185,6 +174,28 @@ struct WorkshopView: View {
                 }
             }.padding(16)
         }.clipped().frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// What the scene is showing, on a panel so it stays legible over the lawn.
+    private var sceneTitle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(following ? (selectedIsland?.lead.projectName ?? "Your lot") : "Whole lot")
+                .font(.system(size: 17, weight: .semibold, design: .rounded)).lineLimit(1)
+            if following, let agent = selected {
+                Label(agent.state.label, systemImage: agent.state.symbol)
+                    .font(.caption.weight(.medium)).foregroundStyle(agent.state.tint)
+            } else {
+                Text("\(islands.count) sessions · \(islands.flatMap(\.subagents).count) subagents")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if demo {
+                Text(WorkshopDemo.caption(step: demoStep)).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: 260, alignment: .leading)
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11))
     }
 
     /// Recorded tokens per agent, for the paper stacks on each desk.
@@ -241,6 +252,10 @@ struct WorkshopView: View {
     private var footer: some View {
         HStack(spacing: 15) {
             Label("\(islands.flatMap(\.agents).filter { $0.state.isWorking }.count) working", systemImage: "sparkles")
+            if !needsInput.isEmpty {
+                Label("\(needsInput.count) \(needsInput.count == 1 ? "needs" : "need") you", systemImage: WorkshopState.needsInput.symbol)
+                    .foregroundStyle(WorkshopState.needsInput.tint)
+            }
             Label("\(islands.flatMap(\.agents).filter { $0.state == .idle || $0.state == .completed }.count) resting", systemImage: "moon")
             if !demo && store.workshops.hasUncertainty {
                 Button { showingInfo = true } label: { Label("Some status unavailable", systemImage: "questionmark.circle") }.buttonStyle(.plain)
@@ -321,7 +336,9 @@ struct WorkshopView: View {
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Label(agent.state.label, systemImage: agent.state.symbol).font(.callout.weight(.medium)).foregroundStyle(agent.state.tint)
-                    Text(agent.activity).font(.callout).foregroundStyle(.secondary)
+                    if agent.activity != agent.state.label {
+                        Text(agent.activity).font(.callout).foregroundStyle(.secondary)
+                    }
                     if let date = agent.lastActivity {
                         TimelineView(.periodic(from: .now, by: 10)) { _ in
                             (Text("Last activity ") + Text(date, style: .relative) + Text(" ago"))
@@ -385,9 +402,21 @@ struct WorkshopView: View {
             Text("Rooms stay while sessions are loaded, even when agents are idle or a turn is complete. Closing a session removes its room after the next successful checks.")
             Text("Codex may keep a session loaded after its tab closes. Its room empties when Codex releases the session. Claude Code sessions are matched to their running process.")
             Text("Activity comes from local session events. Missing or unreadable signals show an unavailable status. Waiting for you is shown only when an explicit input or approval request is observed.")
+            Divider()
+            Text("Above each agent").font(.callout.weight(.semibold))
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                ForEach(Self.legend, id: \.self) { state in
+                    GridRow {
+                        Image(decorative: PixelLegend.plumbob(state), scale: 1).interpolation(.none)
+                            .resizable().frame(width: 13.5, height: 21)
+                        Text(state == .working ? "Working or using a tool" : state.label)
+                    }
+                }
+            }.font(.caption)
             Text("No prompts or tool output are copied into the workshop. Monitoring runs while this page is open.").foregroundStyle(.secondary)
         }.font(.callout).padding(20).frame(width: 355)
     }
+    private static let legend: [WorkshopState] = [.working, .needsInput, .waitingForAgents, .completed, .interrupted, .idle]
 }
 
 enum WorkshopDemo {

@@ -85,6 +85,18 @@ enum PixelPortraits {
     }
 }
 
+/// The scene's plumbobs, for the legend: the same pixels, not a redrawn symbol.
+@MainActor
+enum PixelLegend {
+    private static var cache: [WorkshopState: CGImage] = [:]
+    static func plumbob(_ state: WorkshopState) -> CGImage {
+        if let cached = cache[state] { return cached }
+        let image = PixelSims.plumbob(state, frame: 0).cgImage()
+        cache[state] = image
+        return image
+    }
+}
+
 struct WorkshopPortrait: View {
     var agent: WorkshopAgent
     var size: CGFloat
