@@ -75,35 +75,93 @@ struct AccountSettings: View {
 struct AccountsCard: View {
     @Environment(UsageStore.self) private var store
     var body: some View {
+        let accounts = store.stats.accounts
         VStack(alignment: .leading, spacing: 12) {
-            Text("Accounts & quotas").font(.headline)
-            ForEach(store.stats.accounts) { account in
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text(account.name).font(.subheadline.weight(.semibold))
-                        Spacer()
-                        if account.monthlyPayment > 0 {
-                            Text("\(Format.money(account.monthlyPayment))/month · \(Format.money(account.rollingValue)) API value in 30d").font(.caption)
-                        }
-                    }
-                    if let quota = store.quotaSnapshots[account.id], !quota.windows.isEmpty {
-                        ForEach(quota.windows) { window in
-                            HStack {
-                                Text(window.label).font(.caption)
-                                ProgressView(value: window.usedPercent, total: 100).frame(maxWidth: 170)
-                                Text("\(Int(window.remainingPercent))% left").monospacedDigit()
-                                Text(window.resetsAt > Date() ? "Resets " + window.resetsAt.formatted(date: .abbreviated, time: .shortened) : "Reset passed — refresh needed").font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        Text("\(quota.origin) · \(Format.timeAgo(quota.observedAt))" + (quota.isStale() ? " · stale" : ""))
-                            .font(.caption2).foregroundStyle(quota.isStale() ? .orange : .secondary)
-                    } else {
-                        Text("No observed quota available").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if let weekly = account.weekly { Text("Estimated rolling 7d allowance: \(Format.money(weekly.used)) / \(Format.money(weekly.limit))").font(.caption) }
-                    if let block = account.block { Text("Estimated activity block: \(Format.money(block.used)) / \(Format.money(block.limit))").font(.caption) }
+            Eyebrow(text: "Accounts & quotas", icon: "person.crop.rectangle.stack")
+            // Side by side up to three: each account is short, and stacking them
+            // turned one card into the tallest thing on the page.
+            HStack(alignment: .top, spacing: 16) {
+                ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
+                    if index > 0 && accounts.count <= 3 { Divider() }
+                    accountColumn(account)
                 }
             }
-        }.frame(maxWidth: .infinity, alignment: .leading).card()
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    private func accountColumn(_ account: AccountUsage) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(account.name).font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                if account.monthlyPayment > 0 {
+                    Text("\(Format.money(account.monthlyPayment))/mo")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if account.monthlyPayment > 0 {
+                Text("\(Format.money(account.rollingValue)) API value in 30 days")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if let quota = store.quotaSnapshots[account.id], !quota.windows.isEmpty {
+                ForEach(quota.windows) { window in quotaRow(window) }
+                HStack(spacing: 5) {
+                    Text("\(quota.origin) · \(Format.timeAgo(quota.observedAt))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    if quota.isStale() {
+                        Chip(text: "stale", tint: Theme.warning, icon: "clock.arrow.circlepath")
+                    }
+                }
+            } else {
+                Text("No observed quota yet")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            if let weekly = account.weekly {
+                estimate("Estimated rolling 7d", weekly)
+            }
+            if let block = account.block {
+                estimate("Estimated activity block", block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func quotaRow(_ window: QuotaWindow) -> some View {
+        let used = window.usedPercent / 100
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(window.label).font(.caption)
+                Spacer(minLength: 8)
+                Text("\(Int(window.remainingPercent))% left")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(Theme.fillColor(used, calm: .primary))
+            }
+            ShareBar(fraction: used, color: Theme.fillColor(used, calm: Theme.accent), height: 5)
+            Text(window.resetsAt > Date()
+                 ? "Resets " + window.resetsAt.formatted(date: .abbreviated, time: .shortened)
+                 : "Reset passed — refresh needed")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(window.label)
+        .accessibilityValue("\(Int(window.remainingPercent)) percent left")
+    }
+
+    private func estimate(_ title: String, _ gauge: PlanGauge) -> some View {
+        HStack {
+            Text(title)
+            Spacer(minLength: 8)
+            Text("\(Format.money(gauge.used)) / \(Format.money(gauge.limit))").monospacedDigit()
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }

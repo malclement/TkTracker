@@ -59,6 +59,8 @@ struct StatTile: View {
             Text(value)
                 .font(Theme.metric(24))
                 .contentTransition(.numericText())
+            // Pins the footnote to the bottom edge when a neighbour is taller.
+            Spacer(minLength: 0)
             Group {
                 if let delta {
                     HStack(spacing: 5) {
@@ -81,7 +83,8 @@ struct StatTile: View {
             }
             .frame(height: 16)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Fill the row's height so side-by-side tiles share one card edge.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .card(padding: 14)
         // Read as one statement rather than four unrelated fragments.
         .accessibilityElement(children: .ignore)

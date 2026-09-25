@@ -150,20 +150,14 @@ struct OverviewView: View {
 
                 tiles(stats)
                 if !stats.coverage.note.isEmpty {
-                    Text(stats.coverage.note).font(.caption).foregroundStyle(stats.coverage.isIncomplete ? .orange : .secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading).card()
-                }
-                if let previous = stats.previousPeriodCost {
-                    Text("Previous comparable period: \(Format.money(previous)) · Change: \(Format.money(stats.cost - previous))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                AccountsCard()
-                BudgetsCard()
-
-                if stats.blockGauge != nil || stats.weeklyGauge != nil {
-                    allowanceCard(stats)
+                    NoticeBanner(
+                        text: stats.coverage.note,
+                        icon: stats.coverage.isIncomplete ? "exclamationmark.triangle.fill" : "info.circle.fill",
+                        tint: stats.coverage.isIncomplete ? Theme.warning : .secondary
+                    )
                 }
 
+                // What was spent, then where it went, then how close to the limits.
                 spendChart(stats)
 
                 HStack(alignment: .top, spacing: 12) {
@@ -174,6 +168,12 @@ struct OverviewView: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
+
+                if stats.blockGauge != nil || stats.weeklyGauge != nil {
+                    allowanceCard(stats)
+                }
+                AccountsCard()
+                BudgetsCard()
 
                 if !stats.heatmap.isEmpty {
                     ActivityHeatmap(cells: stats.heatmap).card()
@@ -208,29 +208,74 @@ struct OverviewView: View {
         }
     }
 
-    /// The four headline tiles. Two slots are adaptive: today's view swaps
-    /// Tokens for a projection, and a configured plan swaps Sessions for the
-    /// value multiple. Split out of the body because the whole row in one
-    /// expression pushed the type checker past its budget.
+    /// The headline row: spend leads at half the width, two adaptive tiles share
+    /// the rest. Today's view swaps Tokens for a projection, and a configured
+    /// plan swaps Sessions for the value multiple. Cache hit rate lives in the
+    /// Prompt cache card below, with its context. Split out of the body because
+    /// the whole row in one expression pushed the type checker past its budget.
     private func tiles(_ stats: DashboardStats) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            StatTile(
-                label: stats.coverage.isIncomplete ? "API value (partial)" : "API-equivalent value",
-                value: Format.money(stats.cost),
-                icon: "dollarsign.circle",
-                sub: spendSub(stats),
-                delta: stats.isTodayView ? stats.todayVsYesterday : nil,
-                deltaLabel: "vs yesterday by now"
-            )
-            secondTile(stats)
-            StatTile(
-                label: "Cache hit rate",
-                value: Format.percent(stats.cacheHitRate),
-                icon: "bolt.fill",
-                sub: stats.cacheHitRate > 0 ? "of prompt tokens" : "no cached prompts yet"
-            )
-            fourthTile(stats)
+            heroTile(stats)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(alignment: .top, spacing: 12) {
+                secondTile(stats)
+                fourthTile(stats)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func heroTile(_ stats: DashboardStats) -> some View {
+        let comparison = spendComparison(stats)
+        return VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(
+                text: stats.coverage.isIncomplete ? "API value (partial)" : "API-equivalent value",
+                icon: "dollarsign.circle"
+            )
+            Text(Format.money(stats.cost))
+                .font(Theme.metric(36, weight: .bold))
+                .kerning(-0.5)
+                .contentTransition(.numericText())
+            Spacer(minLength: 0)
+            HStack(spacing: 5) {
+                if let comparison {
+                    Chip(
+                        text: Format.signedPercent(comparison.delta),
+                        tint: comparison.delta >= 0 ? Theme.serious : Theme.good,
+                        icon: comparison.delta >= 0 ? "arrow.up.right" : "arrow.down.right"
+                    )
+                    Text(comparison.label)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                } else if let sub = spendSub(stats) {
+                    Text(sub)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(height: 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .card(padding: 14)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("API-equivalent value")
+        .accessibilityValue(
+            [Format.money(stats.cost), comparison.map { "\(Format.signedPercent($0.delta)) \($0.label)" }]
+                .compactMap { $0 }.joined(separator: ", ")
+        )
+    }
+
+    /// Today compares against yesterday at the same hour; any other range
+    /// against the equally long period before it.
+    private func spendComparison(_ stats: DashboardStats) -> (delta: Double, label: String)? {
+        if stats.isTodayView {
+            return stats.todayVsYesterday.map { ($0, "vs yesterday by now") }
+        }
+        guard let previous = stats.previousPeriodCost, previous > 0.01 else { return nil }
+        return ((stats.cost - previous) / previous, "vs \(Format.money(previous)) the period before")
     }
 
     @ViewBuilder
@@ -420,7 +465,8 @@ struct OverviewView: View {
                     AxisGridLine().foregroundStyle(.quaternary.opacity(0.6))
                     AxisValueLabel {
                         if let v = value.as(Double.self) {
-                            Text(metric == .cost ? Format.money(v) : Format.tokens(Int64(v)))
+                            // Compact form: "$50" not "$50,00", so tick labels share one precision.
+                            Text(metric == .cost ? (v == 0 ? "$0" : Format.moneyCompact(v)) : Format.tokens(Int64(v)))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -428,17 +474,28 @@ struct OverviewView: View {
                 }
             }
             .chartXAxis {
-                AxisMarks { _ in
-                    AxisValueLabel(
-                        format: stats.chartUnit == .hour
-                            ? .dateTime.hour()
-                            : .dateTime.day().month(.abbreviated)
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                AxisMarks { value in
+                    // A format-style label ignores foregroundStyle and picks up the
+                    // accent; a Text label keeps axis ink neutral.
+                    AxisValueLabel {
+                        if let date = value.as(Date.self) {
+                            Text(date, format: stats.chartUnit == .hour
+                                 ? .dateTime.hour()
+                                 : .dateTime.day().month(.abbreviated))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             .frame(height: 260)
+            .overlay {
+                if stats.chart.isEmpty {
+                    Text("No usage in this range")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                }
+            }
             .accessibilityLabel(metric == .cost ? "Spend by model over time" : "Tokens by model over time")
             .accessibilityValue(chartSummary(stats))
         }
@@ -579,7 +636,8 @@ struct OverviewView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
-                        ForEach(stats.models.prefix(6)) { m in
+                        // Same rows as the ring: a $0 model has no slice to key.
+                        ForEach(stats.models.filter { $0.cost > 0 }.prefix(6)) { m in
                             HStack(spacing: 6) {
                                 Swatch(color: store.colorScale.color(for: m.shortName, family: m.family))
                                 Text(m.shortName)
