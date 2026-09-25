@@ -34,8 +34,10 @@ jobs:
             exit 1
           fi
 
-      # Public releases require verified signing and notarization. Unsigned
-      # development candidates remain available through ordinary CI artifacts.
+      # With Developer ID secrets the release is signed and notarized. Without
+      # them it is published ad-hoc signed, and the notes say so and explain
+      # how to open it: the owner chose an installable release over waiting for
+      # an Apple Developer account.
       - name: Detect signing capability
         id: signing
         env:
@@ -45,9 +47,12 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::error::Production releases require Developer ID and Apple notarization credentials. Use CI artifacts for an unsigned candidate."
-            exit 1
+            echo "::notice::No Developer ID configured: building an ad-hoc signed release."
           fi
+
+      - name: Build ad-hoc universal app
+        if: steps.signing.outputs.enabled != 'true'
+        run: make zip smoke APP_BUILDER=xcode
 
       - name: Import Developer ID certificate
         if: steps.signing.outputs.enabled == 'true'
@@ -119,6 +124,7 @@ jobs:
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ steps.signing.outputs.enabled }}
         # Notes are assembled into a file rather than an inline --notes argument.
         # A multi-line shell string inside a YAML block scalar has to keep every
         # continuation line indented past the block marker; getting that wrong
@@ -136,8 +142,16 @@ jobs:
               cat "docs/releases/$VERSION.md"
               echo
             fi
-            echo '> [!NOTE]'
-            echo '> Signed with a Developer ID and notarized by Apple — open it normally.'
+            if [ "$SIGNED" = "true" ]; then
+              echo '> [!NOTE]'
+              echo '> Signed with a Developer ID and notarized by Apple — open it normally.'
+            else
+              echo '> [!IMPORTANT]'
+              echo '> This build is ad-hoc signed, not notarized by Apple, so macOS blocks the first launch.'
+              echo '> After moving TkTracker.app to Applications, either run'
+              echo '> `xattr -dr com.apple.quarantine /Applications/TkTracker.app`,'
+              echo '> or open it once, then choose **Open Anyway** in System Settings › Privacy & Security.'
+            fi
             echo
             echo '<details><summary>Homebrew cask checksum</summary>'
             echo

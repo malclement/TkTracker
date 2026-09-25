@@ -82,10 +82,20 @@ and a synthetic session's parsing/cache/archive/export path. SwiftPM-only builds
 have no Shortcuts metadata. Runtime discovery still requires macOS registration;
 see [Shortcuts validation](docs/app-intents.md).
 
-Production releases require Developer ID signing and Apple notarization. The
-release workflow fails without signing credentials; CI artifacts are development
-candidates and must not be described as notarized releases. Older releases may
-be ad-hoc signed; follow their release notes.
+### Install a release
+
+Download `TkTracker-<version>.zip` from
+[Releases](https://github.com/malclement/TkTracker/releases/latest), unzip it and
+move `TkTracker.app` to `/Applications`. Releases are ad-hoc signed, not notarized
+by Apple, so macOS blocks the first launch. Either run
+
+```sh
+xattr -dr com.apple.quarantine /Applications/TkTracker.app
+```
+
+or open it once, then choose **Open Anyway** in System Settings › Privacy &
+Security. The release workflow notarizes instead when Developer ID secrets are
+configured.
 
 Enable **Launch at login** in Settings once installed. The existing
 [Homebrew cask](Casks/tktracker.rb) tracks the last published release and is updated

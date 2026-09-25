@@ -1,12 +1,14 @@
 # Changelog
 
 
-## 2.0.0 — release candidate
+## [2.0.0] - 2026-09-25
 
-- Unreleased: redraw Workshops as a pixel-art lot on a street, replacing the floating islands. Each session is a room; agents are Sims with a plumbob and thought bubble, and walk to a station for their state (desk, coffee machine, couch, or the front of the room when they need you). Desks carry a paper stack that grows with recorded tokens. Dark mode is night, lit by streetlamps, and by desk lamps only while agents work. SpriteKit replaces RealityKit; free orbit becomes drag-to-pan with pixel-exact zoom steps.
-- RC2 (build 8): fix Claude session detection outside UTC and transcript discovery for project paths containing punctuation or Unicode.
-- Add Floating Workshops: a native 3D page with a workshop for each loaded session, animated agent avatars and attached subagent platforms.
-- Add focused and overview modes, a persistent session/team list, drag-to-orbit, automatic camera framing, project/provider filters and an explicit Needs you state.
+Ad-hoc signed (not notarized): see the release notes to open it the first time.
+
+- Redraw Workshops as a pixel-art lot on a street, replacing the floating islands. Each session is a room; agents are Sims with a plumbob and thought bubble, and walk to a station for their state (desk, coffee machine, couch, or the front of the room when they need you). Desks carry a paper stack that grows with recorded tokens. Dark mode is night, lit by streetlamps, and by desk lamps only while agents work. SpriteKit replaces RealityKit; free orbit becomes drag-to-pan with pixel-exact zoom steps.
+- Fix Claude session detection outside UTC and transcript discovery for project paths containing punctuation or Unicode.
+- Add Workshops: a page with a room for each loaded session, animated agents and their subagents (first shipped in RC1 as a 3D scene).
+- Add focused and overview modes, a persistent session/team list, automatic framing, project/provider filters and an explicit Needs you state.
 - Observe local Codex and Claude Code activity without hooks or provider configuration changes. Idle/completed sessions remain visible; reliably observed closure removes them. Codex can retain loaded sessions after tabs close.
 - Prevent delayed tool results from restarting completed/interrupted agent animations; preserve unavailable states when session presence cannot be confirmed.
 
@@ -15,7 +17,7 @@
 - Preserve request timestamps and branch changes; fix fractional-timezone boundaries, future-record filtering, overflow and CSV escaping.
 - Add custom dates, calendar-month and saved filters, previous-period comparisons, session details, agent trees and model-price simulation.
 - Add monthly/project budgets, spending forecasts, opt-in quota and anomaly alerts, usage backups and metadata retention.
-- Add Xcode universal packaging, extracted App Intents verification and isolated packaged smoke checks. Production publication now requires signing and notarization credentials.
+- Add Xcode universal packaging, extracted App Intents verification and isolated packaged smoke checks. Releases are notarized when Developer ID credentials are configured, and ad-hoc signed otherwise.
 
 
 All notable changes to TkTracker are documented in this file.
