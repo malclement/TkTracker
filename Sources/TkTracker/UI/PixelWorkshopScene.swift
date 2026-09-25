@@ -65,7 +65,7 @@ private func scenePoint(_ i: Double, _ j: Double, _ k: Double = 0) -> CGPoint {
 @MainActor
 final class PixelWorkshopScene: SKScene {
     struct Model {
-        var islands: [WorkshopIsland] = []
+        var projects: [WorkshopProject] = []
         var selectedID: String?
         var dark = true
         var reducedMotion = false
@@ -77,7 +77,7 @@ final class PixelWorkshopScene: SKScene {
 
     var onSelect: (String) -> Void = { _ in }
     /// Points of the view hidden by SwiftUI chrome, so the lot centres in the rest.
-    var insets = NSEdgeInsets(top: 64, left: 0, bottom: 76, right: 0)
+    var insets = NSEdgeInsets(top: 56, left: 0, bottom: 60, right: 0)
     var backingScale: CGFloat = 2
 
     private(set) var model = Model()
@@ -89,11 +89,12 @@ final class PixelWorkshopScene: SKScene {
     /// The lot including its one-tile lawn margin, and the street's first column.
     private var lawn = (lower: WorkshopTile(i: -1, j: -1), upper: WorkshopTile(i: 8, j: 7))
     private var streetI = 8
+    /// Tile extent of the buildings along the street.
+    private var builtLength = 6
     private var scenery: [SKSpriteNode] = []
     private var lampGlows: [SKSpriteNode] = []
     private var rooms: [String: RoomNode] = [:]
     private var departingRooms: [RoomNode] = []
-    private var slots: [String: Int] = [:]
     private let ring = SKSpriteNode()
     private var clock: Double = 0
     private var lastTime: TimeInterval?
@@ -140,35 +141,36 @@ final class PixelWorkshopScene: SKScene {
         if rebuild {
             for room in rooms.values { room.removeFromParent() }
             for room in departingRooms { room.removeFromParent() }
-            rooms.removeAll(); departingRooms.removeAll(); slots.removeAll(); pan = .zero
+            rooms.removeAll(); departingRooms.removeAll(); pan = .zero
         }
         let animateChanges = animate && !rebuild && !next.reducedMotion
         model = next
         if builtDark != next.dark { builtDark = next.dark; layoutBackdrop() }
 
-        let islands = Array(next.islands.prefix(WorkshopLotPlan.slotOrigins.count))
-        slots = WorkshopLotPlan.assignSlots(previous: slots, ids: islands.map(\.id))
-        let occupied = Set(islands.compactMap { slots[$0.id] })
-        for (id, room) in rooms where !islands.contains(where: { $0.id == id }) {
+        let projects = Array(next.projects.prefix(WorkshopLotPlan.maxBuildings))
+        for (id, room) in rooms where !projects.contains(where: { $0.id == id }) {
             rooms.removeValue(forKey: id)
             if animateChanges { room.depart(clock: clock); departingRooms.append(room) } else { room.removeFromParent() }
         }
-        for island in islands {
-            guard let slot = slots[island.id] else { continue }
-            let room: RoomNode
-            if let existing = rooms[island.id], existing.slot == slot {
-                room = existing
-            } else {
-                rooms[island.id]?.removeFromParent()
-                room = RoomNode(islandID: island.id, slot: slot)
-                rooms[island.id] = room
-                world.addChild(room)
-                if animateChanges { room.arrive() }
-            }
-            let walls = WorkshopLotPlan.wallHeights(slot: slot, occupied: occupied)
-            room.update(island: island, walls: walls, model: next, clock: clock, animate: animateChanges)
+        // Size every building first, then place them along the street.
+        var created: Set<String> = []
+        for project in projects where rooms[project.id] == nil {
+            let room = RoomNode(projectID: project.id)
+            rooms[project.id] = room
+            world.addChild(room)
+            created.insert(project.id)
         }
-        updateGround(occupied: occupied)
+        for project in projects { rooms[project.id]?.prepare(project: project) }
+        let lengths = projects.map { rooms[$0.id]!.template.length }
+        let origins = WorkshopLotPlan.origins(lengths: lengths)
+        for (index, project) in projects.enumerated() {
+            guard let room = rooms[project.id] else { continue }
+            let isNew = created.contains(project.id)
+            room.move(to: origins[index], animate: animateChanges && !isNew)
+            room.update(project: project, walls: WorkshopLotPlan.wallHeights(index: index), model: next, clock: clock, animate: animateChanges)
+            if isNew && animateChanges { room.arrive() }
+        }
+        updateGround(lengths: lengths, origins: origins)
         updateSelection()
         fitCamera()
         tick(delta: 0)
@@ -177,56 +179,28 @@ final class PixelWorkshopScene: SKScene {
     /// Beyond the drawn field the view shows this same grass, so edges never show.
     static let grass = NSColor(hex: 0x88BF6A)
 
-    private func updateGround(occupied: Set<Int>) {
-        let (lower, upper) = WorkshopLotPlan.bounds(occupied: occupied)
+    private func updateGround(lengths: [Int], origins: [WorkshopTile]) {
+        let (lower, upper) = WorkshopLotPlan.bounds(lengths: lengths)
         let lawnLower = WorkshopTile(i: lower.i - 1, j: lower.j - 1), lawnUpper = WorkshopTile(i: upper.i + 1, j: upper.j + 1)
         let street = lawnUpper.i
         // The street runs well past the view in both directions, so its ends never show.
         let field = (WorkshopTile(i: lawnLower.i - 14, j: lawnLower.j - 30), WorkshopTile(i: street + 16, j: lawnUpper.j + 30))
-        // Paths from each door to the sidewalk. Rooms with a neighbour to the
-        // east go round it, down the garden path between the columns.
+        // A short path from each door to the sidewalk.
         var paths = Set<WorkshopTile>()
-        for slot in occupied {
-            let origin = WorkshopLotPlan.slotOrigins[slot]
-            let doorJ = origin.j + WorkshopRoomTemplate.door.j
-            let east = origin.i + WorkshopRoomTemplate.width
-            if slot % 2 == 0 && occupied.contains(slot + 1) {
-                let gap = east + 1
-                paths.insert(WorkshopTile(i: east, j: doorJ))
-                for j in doorJ..<upper.j { paths.insert(WorkshopTile(i: gap, j: j)) }
-                for i in gap..<street { paths.insert(WorkshopTile(i: i, j: upper.j)) }
-            } else {
-                for i in east..<street { paths.insert(WorkshopTile(i: i, j: doorJ)) }
-            }
+        for origin in origins {
+            for i in (origin.i + WorkshopRoomTemplate.width)..<street { paths.insert(WorkshopTile(i: i, j: origin.j + WorkshopRoomTemplate.door.j)) }
         }
-        /// True when a spot is clear of every path tile, with `margin` tiles to spare.
-        func clearOfPaths(_ i: Double, _ j: Double, margin: Double = 0.7) -> Bool {
-            !paths.contains { Double($0.i) - margin < i && i < Double($0.i + 1) + margin && Double($0.j) - margin < j && j < Double($0.j + 1) + margin }
-        }
-        // Gardens fill the empty slots inside the lot. Only low planting: a
-        // tree here would hide the room behind it.
-        let emptySlots = (0..<WorkshopLotPlan.slotOrigins.count).filter { slot in
-            let o = WorkshopLotPlan.slotOrigins[slot]
-            return !occupied.contains(slot) && o.i >= lower.i && o.j >= lower.j && o.i < upper.i && o.j < upper.j
-        }
-        var beds: [WorkshopTile] = []
+        // A bush on the lawn between neighbouring buildings, near the street. Nothing
+        // tall, and nothing further back, where the next side wall would hide it.
+        let beds: [WorkshopTile] = []
         var gardenPieces: [(key: String, spot: SIMD2<Double>)] = []
-        for slot in emptySlots {
-            let o = WorkshopLotPlan.slotOrigins[slot]
-            let (oi, oj) = (Double(o.i), Double(o.j))
-            let bedRow = [1, 4].first { r in (0..<2).allSatisfy { dj in (1..<6).allSatisfy { di in
-                !paths.contains(WorkshopTile(i: o.i + di, j: o.j + r + dj)) } } }
-            if let bedRow {
-                beds.append(WorkshopTile(i: o.i + 1, j: o.j + bedRow))
-                gardenPieces.append(("bench", [oi + 4.4, Double(o.j + bedRow) + 0.5]))
-            }
-            for (n, spot) in [SIMD2<Double>(oi + 0.8, oj + 0.9), [oi + 6.2, oj + 0.9], [oi + 0.9, oj + 5.4], [oi + 6.3, oj + 5.3]].enumerated()
-                where clearOfPaths(spot.x, spot.y, margin: 0.3) {
-                gardenPieces.append(("bush|\(n % 2)", spot))
-            }
+        for (origin, length) in zip(origins, lengths).dropLast() {
+            let gapJ = origin.j + length
+            gardenPieces.append(("bush|\(gapJ % 2)", [6.2, Double(gapJ) + 1.1]))
         }
-        let rooms = occupied.sorted().map { WorkshopLotPlan.slotOrigins[$0] }
-        let key = "ground|\(field.0.i),\(field.0.j),\(field.1.i),\(field.1.j)|\(occupied.sorted())"
+        let rooms = origins.map { ($0, lengths[origins.firstIndex(of: $0)!]) }
+        builtLength = upper.j
+        let key = "ground|\(field.0.i),\(field.0.j),\(field.1.i),\(field.1.j)|\(lengths)"
         guard key != groundKey else { return }
         groundKey = key
         lawn = (lawnLower, lawnUpper)
@@ -250,13 +224,12 @@ final class PixelWorkshopScene: SKScene {
             scenery.append(node)
         }
         func piece(_ key: String) -> PixelPiece {
-            if key == "bench" { return PixelRooms.bench() }
             let variant = Int(key.split(separator: "|").last ?? "") ?? 0
             return key.hasPrefix("bush") ? PixelRooms.bush(variant) : PixelRooms.tree(variant)
         }
         func free(_ i: Double, _ j: Double) -> Bool {
             let onLot = i > Double(lawnLower.i) - 1 && j > Double(lawnLower.j) - 1 && i < Double(lawnUpper.i) && j < Double(lawnUpper.j) + 0.5
-            let onStreet = i > Double(street) - 0.8 && i < Double(street) + 4.6
+            let onStreet = i > Double(street) - 0.8 && i < Double(street) + 6.2
             return !onLot && !onStreet
         }
         // A hedge along the lot's back edges marks where the lot ends.
@@ -264,7 +237,7 @@ final class PixelWorkshopScene: SKScene {
         while k < Double(lawnUpper.i) - 0.4 { add("bush|\(Int(k) % 3)", at: [k, Double(lawnLower.j) + 0.45]) { PixelRooms.bush(Int(k) % 3) }; k += 1.1 }
         k = Double(lawnLower.j) + 1.7
         while k < Double(lawnUpper.j) - 0.4 { add("bush|\(Int(k) % 3)", at: [Double(lawnLower.i) + 0.45, k]) { PixelRooms.bush(Int(k) % 3) }; k += 1.1 }
-        // A picket fence along the front edge, open where it meets the sidewalk.
+        // A low picket fence along the far end, open where it meets the sidewalk.
         for i in lawnLower.i..<lawnUpper.i {
             add("fence", at: [Double(i), Double(lawnUpper.j) - 0.1]) { PixelRooms.fence() }
         }
@@ -275,7 +248,7 @@ final class PixelWorkshopScene: SKScene {
         while gi < Double(field.1.i) - 1 {
             var gj = Double(field.0.j) + 1
             while gj < Double(field.1.j) - 1 {
-                let h = workshopHash("\(key)-tree-\(Int(gi * 10)),\(Int(gj * 10))")
+                let h = workshopHash("tree-\(Int(gi * 10)),\(Int(gj * 10))")
                 let i = gi + Double(h % 100) / 100 * spacing * 0.8, j = gj + Double((h >> 8) % 100) / 100 * spacing * 0.8
                 gj += spacing
                 // Thin near the lot so it stays the subject; fuller further out.
@@ -302,9 +275,9 @@ final class PixelWorkshopScene: SKScene {
             lampGlows.append(glow)
             j += 5
         }
-        if let first = occupied.min() {
-            let origin = WorkshopLotPlan.slotOrigins[first]
-            add("mailbox", at: [Double(street) - 0.15, Double(origin.j + WorkshopRoomTemplate.door.j) + 3.0]) { PixelRooms.mailbox() }
+        // A mailbox by each path, on the side away from the nameplate.
+        for origin in origins {
+            add("mailbox", at: [Double(street) - 0.3, Double(origin.j + WorkshopRoomTemplate.door.j) - 0.3]) { PixelRooms.mailbox() }
         }
     }
 
@@ -329,13 +302,13 @@ final class PixelWorkshopScene: SKScene {
         return steps.filter { ($0 * backingScale).rounded() == $0 * backingScale && $0 * backingScale >= 1 }
     }
 
-    /// Art-pixel bounds of the lot and its street, in scene coordinates.
+    /// Art-pixel bounds of the buildings, their walls and the near sidewalk,
+    /// in scene coordinates. The rest of the lot may crop at the edges.
     private var lotFrame: CGRect {
-        let (from, to) = lawn
-        let streetEnd = Double(streetI + 4)
-        let left = scenePoint(Double(from.i), Double(to.j)).x, right = scenePoint(streetEnd, Double(from.j)).x
-        let top = scenePoint(Double(from.i), Double(from.j)).y + 46
-        let bottom = scenePoint(streetEnd, Double(to.j)).y
+        let far = Double(builtLength) + 0.6, front = Double(streetI) + 1
+        let left = scenePoint(-0.4, far).x, right = scenePoint(front, -0.4).x
+        let top = scenePoint(-0.4, -0.4).y + CGFloat(WorkshopLotPlan.fullWall) + 4
+        let bottom = scenePoint(front, far).y
         return CGRect(x: left, y: bottom, width: right - left, height: top - bottom)
     }
 
@@ -429,12 +402,12 @@ final class PixelWorkshopScene: SKScene {
                 current = candidate.parent
             }
         }
-        // A click on a room's floor selects its lead.
+        // A click on a building's floor selects its first session's lead.
         let tile = lotIso.tile(at: [Double(point.x), Double(-point.y)])
         for (id, room) in rooms {
-            let o = WorkshopLotPlan.slotOrigins[room.slot]
-            if tile.x >= Double(o.i), tile.y >= Double(o.j), tile.x < Double(o.i + WorkshopRoomTemplate.width), tile.y < Double(o.j + WorkshopRoomTemplate.height) {
-                return model.islands.first { $0.id == id }?.lead.id
+            let o = room.origin
+            if tile.x >= Double(o.i), tile.y >= Double(o.j), tile.x < Double(o.i + WorkshopRoomTemplate.width), tile.y < Double(o.j + room.template.length) {
+                return model.projects.first { $0.id == id }?.lead.id
             }
         }
         return nil
@@ -443,19 +416,22 @@ final class PixelWorkshopScene: SKScene {
 
 // MARK: - Room
 
-/// One session's room: shell, furniture, cut-away walls, sign and its team.
+/// One project's building: shell, furniture, cut-away walls, sign, and every
+/// member of every session open on the project.
 @MainActor
 private final class RoomNode: SKNode {
-    let islandID: String
-    let slot: Int
+    let projectID: String
     var selectedID: String?
-    private let origin: WorkshopTile
+    private(set) var origin = WorkshopTile(i: 0, j: 0)
+    private(set) var template = WorkshopRoomTemplate(deskCount: 1)
     private let shell = SKSpriteNode()
     private var shellKey = ""
     private var furniture: [String: SKSpriteNode] = [:]
     private var deskKeys: [Int: String] = [:]
     private var glows: [String: SKSpriteNode] = [:]
     private var stubs: [SKSpriteNode] = []
+    private var stubLength = 0
+    private let mat = SKSpriteNode()
     private let sign = SKSpriteNode()
     private let overflowNode = SKSpriteNode()
     /// Warm ceiling light at night, on while anyone in the room is at work.
@@ -463,68 +439,76 @@ private final class RoomNode: SKNode {
     private var signText = ""
     private var sims: [String: SimNode] = [:]
     private var leaving: [SimNode] = []
-    private var template = WorkshopRoomTemplate(deskCount: 1)
+    /// Who sits at which desk. Kept across updates, so nobody moves when a
+    /// teammate arrives or leaves.
+    private var desks: [String: Int] = [:]
+    private var members: [WorkshopAgent] = []
+    private var hiddenCount = 0
     private var departedAt: Double?
     private var dark = true
 
-    init(islandID: String, slot: Int) {
-        self.islandID = islandID
-        self.slot = slot
-        origin = WorkshopLotPlan.slotOrigins[slot]
+    init(projectID: String) {
+        self.projectID = projectID
         super.init()
-        shell.zPosition = Layer.shell + CGFloat(origin.i + origin.j)
-        shell.position = point(0, 0)
         addChild(shell)
-        for n in 0..<WorkshopRoomTemplate.width {
-            stubs.append(stub(alongI: true, i: Double(n), j: Double(WorkshopRoomTemplate.height)))
-        }
-        for n in 0..<WorkshopRoomTemplate.height where n != WorkshopRoomTemplate.door.j {
-            stubs.append(stub(alongI: false, i: Double(WorkshopRoomTemplate.width), j: Double(n)))
-        }
-        let mat = SKSpriteNode()
         mat.show(PixelTextures.shared.piece("doormat") { PixelRooms.doormat() })
-        mat.position = point(Double(WorkshopRoomTemplate.width) + 0.25, Double(WorkshopRoomTemplate.door.j))
         mat.zPosition = Layer.floorMarks
         addChild(mat)
         addChild(sign)
         addChild(overflowNode)
-        roomLight.show(PixelTextures.shared.piece("glow-room") {
-            PixelPiece(canvas: PixelSims.glow(width: 196, height: 98, color: PixelColor(0xFFC070), intensity: 0.85), origin: [98, 49])
-        })
         roomLight.blendMode = .add
         roomLight.zPosition = Layer.glow - 1
-        roomLight.position = point(Double(WorkshopRoomTemplate.width) / 2, Double(WorkshopRoomTemplate.height) / 2, 6)
         roomLight.isHidden = true
         addChild(roomLight)
     }
     required init?(coder: NSCoder) { nil }
-
-    private func stub(alongI: Bool, i: Double, j: Double) -> SKSpriteNode {
-        let node = SKSpriteNode()
-        node.show(PixelTextures.shared.piece("stub|\(alongI)") { PixelRooms.stub(alongI: alongI) })
-        node.position = point(i, j)
-        node.zPosition = depth(i + (alongI ? 0.5 : 0.25), j + (alongI ? 0.25 : 0.5)) + 8
-        addChild(node)
-        return node
-    }
 
     func point(_ i: Double, _ j: Double, _ k: Double = 0) -> CGPoint {
         scenePoint(Double(origin.i) + i, Double(origin.j) + j, k)
     }
     func depth(_ i: Double, _ j: Double) -> CGFloat { CGFloat(Double(origin.i + origin.j) + i + j) * 10 }
 
+    /// Choose who is shown and at which desk, and so how long the room is.
+    /// Every session lead gets a desk before any subagent does.
+    func prepare(project: WorkshopProject) {
+        let leads = project.sessions.map(\.lead)
+        let shownLeads = Array(leads.prefix(WorkshopRoomTemplate.maxDesks))
+        var room = WorkshopRoomTemplate.maxDesks - shownLeads.count
+        var shown: [WorkshopAgent] = []
+        for session in project.sessions where shownLeads.contains(where: { $0.id == session.lead.id }) {
+            let subagents = Array(session.subagents.prefix(room))
+            room -= subagents.count
+            shown += [session.lead] + subagents
+        }
+        members = shown
+        hiddenCount = project.agents.count - shown.count
+        desks = WorkshopDeskPlan.assign(previous: desks, ids: shown.map(\.id), capacity: WorkshopRoomTemplate.maxDesks)
+        template = WorkshopRoomTemplate(deskCount: (desks.values.max() ?? 0) + 1)
+    }
+
+    /// Place the building at its spot on the street; slide there if it moved.
+    func move(to next: WorkshopTile, animate: Bool) {
+        guard next != origin else { return }
+        let from = scenePoint(Double(origin.i), Double(origin.j)), to = scenePoint(Double(next.i), Double(next.j))
+        origin = next
+        guard animate else { return }
+        removeAction(forKey: "slide")
+        position = CGPoint(x: position.x + from.x - to.x, y: position.y + from.y - to.y)
+        run(.move(to: .zero, duration: 0.6), withKey: "slide")
+    }
+
     func arrive() {
         alpha = 0
         position.y = 18
         run(.group([.fadeIn(withDuration: 0.45), .moveTo(y: 0, duration: 0.45)]))
-        puff(at: point(3.5, 3))
+        puff(at: point(3.5, Double(template.length) / 2))
     }
 
     func depart(clock: Double) {
         departedAt = clock
         for sim in sims.values { sim.leave(template: template, clock: clock) }
         run(.sequence([.wait(forDuration: 1.4), .fadeOut(withDuration: 0.5)]))
-        run(.sequence([.wait(forDuration: 1.5), .run { [weak self] in guard let self else { return }; self.puff(at: self.point(3.5, 3)) }]))
+        run(.sequence([.wait(forDuration: 1.5), .run { [weak self] in guard let self else { return }; self.puff(at: self.point(3.5, Double(self.template.length) / 2)) }]))
     }
     func finished(clock: Double) -> Bool { departedAt.map { clock - $0 > 2.2 } ?? false }
 
@@ -538,42 +522,75 @@ private final class RoomNode: SKNode {
         node.run(.sequence([.animate(with: frames, timePerFrame: 0.12), .removeFromParent()]))
     }
 
-    func update(island: WorkshopIsland, walls: (backRight: Int, backLeft: Int), model: PixelWorkshopScene.Model, clock: Double, animate: Bool) {
-        dark = model.dark
-        let shown = Array(island.subagents.prefix(WorkshopRoomTemplate.maxDesks - 1))
-        let members = [island.lead] + shown
-        let previousDesks = template.deskCount
-        template = WorkshopRoomTemplate(deskCount: members.count)
-        let decor = WorkshopDecor(projectPath: island.lead.projectPath, source: island.lead.source)
+    /// Front walls, cut down to a stub: along the far end, and along the street side except the door.
+    private func layoutStubs() {
+        let length = template.length
+        if length != stubLength {
+            for stub in stubs { stub.removeFromParent() }
+            stubs.removeAll()
+            stubLength = length
+            stubs = (0..<WorkshopRoomTemplate.width).map { _ in makeStub(alongI: true) }
+                + (0..<length).filter { $0 != WorkshopRoomTemplate.door.j }.map { _ in makeStub(alongI: false) }
+        }
+        var index = 0
+        for n in 0..<WorkshopRoomTemplate.width {
+            place(stubs[index], alongI: true, i: Double(n), j: Double(length)); index += 1
+        }
+        for n in 0..<length where n != WorkshopRoomTemplate.door.j {
+            place(stubs[index], alongI: false, i: Double(WorkshopRoomTemplate.width), j: Double(n)); index += 1
+        }
+    }
+    private func makeStub(alongI: Bool) -> SKSpriteNode {
+        let node = SKSpriteNode()
+        node.show(PixelTextures.shared.piece("stub|\(alongI)") { PixelRooms.stub(alongI: alongI) })
+        addChild(node)
+        return node
+    }
+    private func place(_ stub: SKSpriteNode, alongI: Bool, i: Double, j: Double) {
+        stub.position = point(i, j)
+        stub.zPosition = depth(i + (alongI ? 0.5 : 0.25), j + (alongI ? 0.25 : 0.5)) + 8
+    }
 
-        let key = "shell|\(decor.wallpaper).\(decor.floor).\(decor.rug)|\(walls.backRight).\(walls.backLeft)"
+    func update(project: WorkshopProject, walls: (backRight: Int, backLeft: Int), model: PixelWorkshopScene.Model, clock: Double, animate: Bool) {
+        dark = model.dark
+        let length = template.length
+        let decor = WorkshopDecor(projectPath: project.path, source: project.lead.source)
+        shell.zPosition = Layer.shell + CGFloat(origin.i + origin.j)
+        shell.position = point(0, 0)
+        let key = "shell|\(decor.wallpaper).\(decor.floor).\(decor.rug)|\(length)|\(walls.backRight).\(walls.backLeft)"
         if key != shellKey {
             shellKey = key
-            shell.show(PixelTextures.shared.piece(key) { PixelRooms.shell(decor: decor, backRight: walls.backRight, backLeft: walls.backLeft) })
+            shell.show(PixelTextures.shared.piece(key) { PixelRooms.shell(decor: decor, length: length, backRight: walls.backRight, backLeft: walls.backLeft) })
         }
+        layoutStubs()
+        mat.position = point(Double(WorkshopRoomTemplate.width) + 0.25, Double(WorkshopRoomTemplate.door.j))
 
-        // Fixed furniture.
+        // Fixed furniture: the lounge at the street corner, a bookshelf at the far end.
         place("plant", i: 0, j: 0, depthAt: [0.5, 0.5]) { PixelRooms.plant() }
-        place("bookshelf", i: 0, j: 1, depthAt: [0.3, 1.5]) { PixelRooms.bookshelf() }
-        place("coffee", i: 6, j: 0, depthAt: [6.5, 0.5]) { PixelRooms.coffee() }
-        place("couch|\(decor.couch)", i: 0, j: 5, depthAt: [1.5, 5.5], name: "couch") { PixelRooms.couch(decor.couch) }
+        place("coffee", i: 1, j: 0, depthAt: [1.5, 0.5]) { PixelRooms.coffee() }
+        place("couch|\(decor.couch)", i: 3, j: 0, depthAt: [4.5, 0.5], name: "couch") { PixelRooms.couch(decor.couch) }
+        place("plant", i: 6, j: 0, depthAt: [6.5, 0.5], name: "plant2") { PixelRooms.plant() }
+        place("bookshelf", i: 0, j: length - 1, depthAt: [0.3, Double(length) - 0.5]) { PixelRooms.bookshelf() }
 
-        // Desks, one per member, in a fixed order.
+        // Desks, each owned by whoever holds it; a desk with no owner stands empty.
+        let owners = Dictionary(desks.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
+        let byID = Dictionary(members.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for n in 0..<WorkshopRoomTemplate.maxDesks {
             let deskName = "desk\(n)", chairName = "chair\(n)"
-            guard n < members.count else {
+            guard n < template.deskCount else {
                 for name in [deskName, chairName] { furniture.removeValue(forKey: name)?.run(.sequence([.fadeOut(withDuration: 0.3), .removeFromParent()])) }
                 glows.removeValue(forKey: deskName)?.removeFromParent()
                 glows.removeValue(forKey: deskName + "-screen")?.removeFromParent()
                 deskKeys[n] = nil
                 continue
             }
-            let owner = members[n]
-            let spec = WorkshopRoomTemplate.desks[n]
-            let working = owner.state.isWorking || owner.state == .needsInput || owner.state == .waitingForAgents
-            let atDesk = owner.state.isWorking
-            let sheets = WorkshopPaperStack.sheets(tokens: model.tokens[owner.id])
-            let deskKey = "desk|\(spec.screenFacesI)|\(working)|\(sheets)|\(atDesk)"
+            let owner = owners[n].flatMap { byID[$0] }
+            let spec = WorkshopRoomTemplate.desk(n)
+            let state = owner?.state ?? .idle
+            let working = owner != nil && (state.isWorking || state == .needsInput || state == .waitingForAgents)
+            let atDesk = owner != nil && state.isWorking
+            let sheets = WorkshopPaperStack.sheets(tokens: owner.flatMap { model.tokens[$0.id] })
+            let deskKey = "desk|true|\(working)|\(sheets)|\(atDesk)"
             let isNew = furniture[deskName] == nil
             let desk = furniture[deskName] ?? SKSpriteNode()
             if isNew { addChild(desk); furniture[deskName] = desk }
@@ -583,7 +600,7 @@ private final class RoomNode: SKNode {
                 deskKeys[n] = deskKey
                 let frames = (0..<(working ? 3 : 1)).map { f in
                     PixelTextures.shared.piece("\(deskKey)|\(f)") {
-                        PixelRooms.desk(facesI: spec.screenFacesI, screen: working, frame: f, sheets: sheets, lamp: atDesk)
+                        PixelRooms.desk(facesI: true, screen: working, frame: f, sheets: sheets, lamp: atDesk)
                     }
                 }
                 desk.removeAction(forKey: "screen")
@@ -592,7 +609,7 @@ private final class RoomNode: SKNode {
                     desk.run(.repeatForever(.animate(with: frames.map(\.0), timePerFrame: 0.4)), withKey: "screen")
                 }
             }
-            if isNew && animate && n >= previousDesks {
+            if isNew && animate {
                 desk.alpha = 0
                 desk.position.y += 20
                 desk.run(.group([.fadeIn(withDuration: 0.3), .moveBy(x: 0, y: -20, duration: 0.3)]))
@@ -605,7 +622,7 @@ private final class RoomNode: SKNode {
             chair.position = point(seat.point.x, seat.point.y)
             chair.zPosition = depth(seat.point.x, seat.point.y) + 6
             // Desk lamp light at night, only while its owner works.
-            let lamp = spec.screenFacesI ? SIMD2<Double>(Double(spec.i) + 0.3, Double(spec.j) + 1.75) : SIMD2<Double>(Double(spec.i) + 1.75, Double(spec.j) + 0.3)
+            let lamp = SIMD2<Double>(Double(spec.i) + 0.3, Double(spec.j) + 1.75)
             let glow = glows[deskName] ?? SKSpriteNode()
             if glows[deskName] == nil {
                 glow.show(PixelTextures.shared.piece("glow") { PixelPiece(canvas: PixelSims.glow(width: 64, height: 34, color: PixelColor(0xFFD98A)), origin: [32, 20]) })
@@ -623,32 +640,36 @@ private final class RoomNode: SKNode {
                 screenGlow.zPosition = Layer.glow
                 addChild(screenGlow); glows[screenName] = screenGlow
             }
-            let monitor = spec.screenFacesI ? SIMD2<Double>(Double(spec.i) + 0.4, Double(spec.j) + 1.0) : SIMD2<Double>(Double(spec.i) + 1.0, Double(spec.j) + 0.4)
-            screenGlow.position = point(monitor.x, monitor.y, 21)
+            screenGlow.position = point(Double(spec.i) + 0.4, Double(spec.j) + 1.0, 21)
             screenGlow.isHidden = !(dark && working)
         }
 
+        roomLight.show(PixelTextures.shared.piece("glow-room|\(length)") {
+            let w = (WorkshopRoomTemplate.width + length) * 14
+            return PixelPiece(canvas: PixelSims.glow(width: w, height: w / 2, color: PixelColor(0xFFC070), intensity: 0.85), origin: [Double(w / 2), Double(w / 4)])
+        })
+        roomLight.position = point(Double(WorkshopRoomTemplate.width) / 2, Double(length) / 2, 6)
         roomLight.isHidden = !(dark && members.contains { $0.state.isWorking || $0.state == .needsInput || $0.state == .waitingForAgents })
 
-        // Signage.
-        let title = island.lead.projectName
-        if title != signText {
-            signText = title
-            sign.show(PixelTextures.shared.piece("sign|\(PixelFont.sanitized(title))") { PixelRooms.nameplate(title) })
+        // Signage, beside the door where the path from the street arrives.
+        if project.name != signText {
+            signText = project.name
+            sign.show(PixelTextures.shared.piece("sign|\(PixelFont.sanitized(project.name))") { PixelRooms.nameplate(project.name) })
         }
-        // Beside the door, where the path from the street arrives.
         sign.position = point(Double(WorkshopRoomTemplate.width) + 0.55, Double(WorkshopRoomTemplate.door.j) + 1.9)
         sign.zPosition = depth(Double(WorkshopRoomTemplate.width) + 0.55, Double(WorkshopRoomTemplate.door.j) + 1.9) + 9
-        let hidden = island.subagents.count - shown.count
-        overflowNode.isHidden = hidden <= 0
-        if hidden > 0 {
-            overflowNode.show(PixelTextures.shared.piece("overflow|\(hidden)") { PixelRooms.overflow(hidden) })
-            overflowNode.position = point(6.6, 4.9, 34)
+        overflowNode.isHidden = hiddenCount <= 0
+        if hiddenCount > 0 {
+            overflowNode.show(PixelTextures.shared.piece("overflow|\(hiddenCount)") { PixelRooms.overflow(hiddenCount) })
+            // On top of the nameplate: more people work here than the room can show.
+            overflowNode.position = CGPoint(x: sign.position.x, y: sign.position.y + 18)
             overflowNode.zPosition = Layer.signals
         }
 
         // The team.
-        let stations = WorkshopStationPlanner.stations(for: members, template: template)
+        var teams: [String: String] = [:]
+        for session in project.sessions { for agent in session.agents { teams[agent.id] = session.lead.id } }
+        let stations = WorkshopStationPlanner.stations(for: members, template: template, desks: desks, teams: teams)
         let ids = Set(members.map(\.id))
         for (id, sim) in sims where !ids.contains(id) {
             sims.removeValue(forKey: id)
@@ -676,7 +697,7 @@ private final class RoomNode: SKNode {
         node.zPosition = depth(center.x, center.y)
     }
 
-    var couchDepth: CGFloat { depth(1.5, 5.5) }
+    var couchDepth: CGFloat { depth(4.5, 0.5) }
 
     func tick(clock: Double, delta: Double, reduced: Bool) {
         for sim in sims.values { sim.tick(clock: clock, delta: delta, reduced: reduced, selected: sim.agentID == selectedID) }
@@ -779,13 +800,13 @@ private final class SimNode: SKNode {
         leavingAt = clock
         celebrateUntil = nil
         pendingWalk = nil
-        let route = WorkshopPathfinder.path(from: tile, to: WorkshopRoomTemplate.door, blocked: template.blocked)
+        let route = WorkshopPathfinder.path(from: tile, to: WorkshopRoomTemplate.door, blocked: template.blocked, height: template.length)
         waypoints = route.dropFirst().map(\.center) + [WorkshopRoomTemplate.outside]
         plumbob.isHidden = true; bubble.isHidden = true; effects.removeAllChildren()
     }
 
     private func walk(from start: WorkshopTile, template: WorkshopRoomTemplate, prefix: [SIMD2<Double>] = []) {
-        let route = WorkshopPathfinder.path(from: start, to: station.tile, blocked: template.blocked)
+        let route = WorkshopPathfinder.path(from: start, to: station.tile, blocked: template.blocked, height: template.length)
         waypoints = prefix + route.dropFirst().map(\.center) + [station.point]
     }
 

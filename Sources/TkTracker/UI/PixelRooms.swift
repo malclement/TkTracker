@@ -27,9 +27,10 @@ enum PixelRooms {
         (0xF4E4CC, 0xEBCFB4), (0xF8DCC6, 0xF0C4A6), (0xEEE8CC, 0xDED4AC), // warm: Claude Code
         (0xDDE8F6, 0xC8D8EE), (0xDCEFE6, 0xC4E2D4), (0xE6E0F4, 0xD4CCEC), // cool: Codex
     ]
-    static let floors: [(PixelColor, PixelColor, PixelColor)] = [
-        (PixelColor(0xE6B47C), PixelColor(0xDAA46A), PixelColor(0xBE8A56)), (PixelColor(0xF2EADA), PixelColor(0xD8CEBC), PixelColor(0xC4B8A4)),
-        (PixelColor(0x8296D2), PixelColor(0x788CC8), PixelColor(0x6A7CB8)), (PixelColor(0xB67E52), PixelColor(0xA87248), PixelColor(0x8E5E3C)),
+    /// Two tones and a joint colour; wood is laid as planks, the rest as tiles.
+    static let floors: [(PixelColor, PixelColor, PixelColor, planks: Bool)] = [
+        (PixelColor(0xE6B47C), PixelColor(0xDAA46A), PixelColor(0xBE8A56), true), (PixelColor(0xF2EADA), PixelColor(0xD8CEBC), PixelColor(0xC4B8A4), false),
+        (PixelColor(0x8296D2), PixelColor(0x788CC8), PixelColor(0x6A7CB8), false), (PixelColor(0xB67E52), PixelColor(0xA87248), PixelColor(0x8E5E3C), true),
     ]
     static let rugs: [(PixelColor, PixelColor)] = [
         (PixelColor(0xD8768E), PixelColor(0xB4546E)), (PixelColor(0x62A8C2), PixelColor(0x3F7F9A)),
@@ -159,25 +160,44 @@ enum PixelRooms {
     // MARK: Room
 
     /// Floor, rug and back walls. Everything in the room stands in front of this.
-    static func shell(decor: WorkshopDecor, backRight: Int, backLeft: Int) -> PixelPiece {
-        let W = Double(WorkshopRoomTemplate.width), D = Double(WorkshopRoomTemplate.height)
+    static func shell(decor: WorkshopDecor, length: Int, backRight: Int, backLeft: Int) -> PixelPiece {
+        let W = Double(WorkshopRoomTemplate.width), D = Double(length)
         let ox = D * 16 + 6, oy = Double(WorkshopLotPlan.fullWall) + 6
         var c = PixelCanvas(width: Int(ox + W * 16 + 8), height: Int(oy + (W + D) * 8 + 4))
         let iso = Iso(ox: ox, oy: oy)
         let floor = floors[decor.floor % floors.count]
-        for i in 0..<Int(W) {
-            for j in 0..<Int(D) {
-                let a = (i + j) % 2 == 0 ? floor.0 : floor.1
-                c.flat(iso, i: Double(i), j: Double(j), w: 1, d: 1, a)
-                if decor.floor % 2 == 0 { // planks
-                    c.flat(iso, i: Double(i), j: Double(j) + 0.48, w: 1, d: 0.05, floor.2)
+        if floor.planks {
+            // Planks run toward the street, three to a tile, with staggered joints.
+            let strips = length * 3
+            for s in 0..<strips {
+                let j0 = Double(s) / 3
+                var i0 = -Double((s * 5) % 3) * 0.66
+                var n = 0
+                while i0 < W {
+                    let a = max(0, i0), b = min(W, i0 + 2.4)
+                    let h = workshopHash("plank-\(s)-\(n)")
+                    let tone = [floor.0, floor.1, floor.0.mixed(with: floor.1, 0.5)][Int(h % 3)]
+                    c.flat(iso, i: a, j: j0, w: b - a, d: 1.0 / 3, tone)
+                    if i0 > 0 { c.flat(iso, i: a, j: j0, w: 0.06, d: 1.0 / 3, floor.2) }
+                    i0 += 2.4; n += 1
+                }
+                c.flat(iso, i: 0, j: j0, w: W, d: 0.04, floor.2)
+            }
+        } else {
+            // Square tiles with a fine grout line.
+            for i in 0..<Int(W) {
+                for j in 0..<length {
+                    let a = (i + j) % 2 == 0 ? floor.0 : floor.0.mixed(with: floor.1, 0.6)
+                    c.flat(iso, i: Double(i), j: Double(j), w: 1, d: 1, floor.2)
+                    c.flat(iso, i: Double(i) + 0.05, j: Double(j) + 0.05, w: 0.92, d: 0.92, a)
                 }
             }
         }
+        // The lounge rug, in front of the couch.
         let rug = rugs[decor.rug % rugs.count]
-        c.flat(iso, i: 2.2, j: 2.1, w: 2.8, d: 2.2, rug.1)
-        c.flat(iso, i: 2.35, j: 2.25, w: 2.5, d: 1.9, rug.0)
-        c.flat(iso, i: 2.6, j: 2.5, w: 2.0, d: 1.4, rug.0.mixed(with: PixelColor(0xFFFFFF), 0.18))
+        c.flat(iso, i: 3.0, j: 1.0, w: 2.9, d: 1.8, rug.1)
+        c.flat(iso, i: 3.12, j: 1.12, w: 2.66, d: 1.56, rug.0)
+        c.flat(iso, i: 3.4, j: 1.4, w: 2.1, d: 1.0, rug.0.mixed(with: PixelColor(0xFFFFFF), 0.18))
         // Contact shadow where floor meets wall.
         c.flat(iso, i: 0, j: 0, w: W, d: 0.14, PixelColor(0x1C1030, alpha: 50))
         c.flat(iso, i: 0, j: 0, w: 0.14, d: D, PixelColor(0x1C1030, alpha: 50))
@@ -186,27 +206,38 @@ enum PixelRooms {
         let base = PixelColor(paper.base), stripe = PixelColor(paper.stripe)
         let shaded = base.mixed(with: PixelColor(0x6A5A9A), 0.14), shadedStripe = stripe.mixed(with: PixelColor(0x6A5A9A), 0.14)
         let cap = PixelColor(0xFFF6EA), board = PixelColor(0xB08A64)
-        // Back-right wall (plane j = 0), facing +j.
+        // Side wall (plane j = 0) behind the lounge, facing +j.
         let hr = Double(backRight), hl = Double(backLeft)
         c.box(iso, i: 0, j: -0.25, k: 0, w: W, d: 0.25, h: hr, top: cap, left: base, right: base.mixed(with: PixelColor(0x6A5A9A), 0.3))
         var s = 0.25
         while s < W - 0.1 { c.faceJ(iso, i0: s, i1: s + 0.12, j: 0, k0: 4, k1: hr - 2, stripe); s += 0.5 }
         c.faceJ(iso, i0: 0, i1: W, j: 0, k0: 0, k1: 3, board)
-        // Back-left wall (plane i = 0), facing +i.
+        // Back wall (plane i = 0) along the whole room, facing +i.
         c.box(iso, i: -0.25, j: -0.25, k: 0, w: 0.25, d: D + 0.25, h: hl, top: cap, left: shaded.mixed(with: PixelColor(0x6A5A9A), 0.3), right: shaded)
         s = 0.25
         while s < D - 0.1 { c.faceI(iso, i: 0, j0: s, j1: s + 0.12, k0: 4, k1: hl - 2, shadedStripe); s += 0.5 }
         c.faceI(iso, i: 0, j0: 0, j1: D, k0: 0, k1: 3, board.mixed(with: PixelColor(0x6A5A9A), 0.14))
-        if backRight >= WorkshopLotPlan.fullWall {
-            window(&c, iso, alongI: true, from: 4.4, to: 5.8, k0: 18, k1: 32)
+        // A window above the couch, where the side wall stands full height.
+        if backRight >= WorkshopLotPlan.fullWall { window(&c, iso, alongI: true, from: 3.8, to: 5.6, k0: 21, k1: 34) }
+        if backLeft >= WorkshopLotPlan.fullWall {
             // The whiteboard a waiting lead studies when there is nobody to watch.
-            c.faceJ(iso, i0: 1.3, i1: 3.1, j: 0, k0: 20, k1: 33, PixelColor(0x8A92AE))
-            c.faceJ(iso, i0: 1.38, i1: 3.02, j: 0, k0: 21, k1: 32, PixelColor(0xFBFCFF))
-            for (n, k) in [29.0, 26.5, 24.0].enumerated() {
-                c.faceJ(iso, i0: 1.55, i1: 1.55 + 0.5 + Double(n % 2) * 0.5, j: 0, k0: k, k1: k + 1, [PixelColor(0x4FA3E0), PixelColor(0xE8645A), PixelColor(0x3FBF9A)][n])
+            c.faceI(iso, i: 0, j0: 0.9, j1: 2.7, k0: 14, k1: 30, PixelColor(0x8A92AE))
+            c.faceI(iso, i: 0, j0: 0.98, j1: 2.62, k0: 15, k1: 29, PixelColor(0xFBFCFF))
+            for (n, k) in [26.0, 23.5, 21.0, 18.5].enumerated() {
+                let colour = [PixelColor(0x4FA3E0), PixelColor(0xE8645A), PixelColor(0x3FBF9A), PixelColor(0x9B6EE0)][n]
+                c.faceI(iso, i: 0, j0: 1.15, j1: 1.15 + 0.5 + Double(n % 2) * 0.55, k0: k, k1: k + 1, colour)
+            }
+            c.faceI(iso, i: 0, j0: 1.0, j1: 2.6, k0: 13, k1: 14, PixelColor(0xB4B8C8)) // marker tray
+            // Framed prints between the desks, above the monitors.
+            var j = Double(WorkshopRoomTemplate.loungeLength) + 1.75
+            var n = 0
+            while j < D - 1.2 {
+                let art = [PixelColor(0xF0B43C), PixelColor(0x62A8C2), PixelColor(0xD8768E)][n % 3]
+                c.faceI(iso, i: 0, j0: j, j1: j + 0.5, k0: 30, k1: 37, PixelColor(0x6E3F2C))
+                c.faceI(iso, i: 0, j0: j + 0.06, j1: j + 0.44, k0: 31, k1: 36, art)
+                j += Double(WorkshopRoomTemplate.bayLength) * 2; n += 1
             }
         }
-        if backLeft >= WorkshopLotPlan.fullWall { window(&c, iso, alongI: false, from: 3.9, to: 5.2, k0: 16, k1: 30) }
         return PixelPiece(canvas: c, origin: [ox, oy])
     }
 
@@ -282,7 +313,7 @@ enum PixelRooms {
     /// along j at `streetI` (sidewalk, two lanes, sidewalk). `rooms` are the
     /// occupied room origins, which cast a shadow on the grass.
     static func ground(field: (WorkshopTile, WorkshopTile), lawn: (WorkshopTile, WorkshopTile), streetI: Int,
-                       paths: Set<WorkshopTile>, rooms: [WorkshopTile], beds: [WorkshopTile], seed: UInt64) -> PixelPiece {
+                       paths: Set<WorkshopTile>, rooms: [(origin: WorkshopTile, length: Int)], beds: [WorkshopTile], seed: UInt64) -> PixelPiece {
         let (lower, upper) = field
         let W = Double(upper.i - lower.i), D = Double(upper.j - lower.j)
         let ox = D * 16 + 2, oy = 2.0
@@ -339,8 +370,9 @@ enum PixelRooms {
             if !flower { c.plot(Int(p.x) + 1, Int(p.y) - 1, meadow.light) }
         }
         // Rooms cast a short shadow down and to the right of their footprint.
-        let rw = Double(WorkshopRoomTemplate.width), rd = Double(WorkshopRoomTemplate.height)
-        for room in rooms {
+        let rw = Double(WorkshopRoomTemplate.width)
+        for (room, length) in rooms {
+            let rd = Double(length)
             let x = Double(room.i - lower.i), y = Double(room.j - lower.j)
             let (dx, dy) = (0.42, 0.3)
             c.poly([iso.p(x + rw, y + dy), iso.p(x + rw + dx, y + dy), iso.p(x + rw + dx, y + rd + dy),
@@ -348,7 +380,7 @@ enum PixelRooms {
         }
         // Flower beds in the gardens: soil edged in brick, dotted with blooms.
         for (n, bed) in beds.enumerated() {
-            let x = Double(bed.i - lower.i), y = Double(bed.j - lower.j)
+            let x = Double(bed.i - lower.i), y = Double(bed.j - lower.j) + 0.3
             c.flat(iso, i: x, j: y, w: 3, d: 1.4, PixelColor(0xC98A62))
             c.flat(iso, i: x + 0.1, j: y + 0.1, w: 2.8, d: 1.2, PixelColor(0x8A5E40))
             c.flat(iso, i: x + 0.18, j: y + 0.18, w: 2.64, d: 1.04, leaf.base.mixed(with: leaf.shade, 0.4))
@@ -477,18 +509,15 @@ enum PixelRooms {
         return PixelPiece(canvas: c, origin: [15, 49])
     }
 
-    /// One tile of white picket fence along i (the plane j), for the lot's front edge.
+    /// One tile of low white picket fence along i (the plane j), for the lot's front edge.
     static func fence() -> PixelPiece {
-        var (c, iso) = canvas(w: 1, d: 0.1, height: 10)
-        let white = PixelRamp(0xFFFFFF, 0xF4EEE4, 0xD8CEC0, 0xA89C90)
-        for k in [3.0, 7.0] { c.faceJ(iso, i0: 0, i1: 1, j: 0.05, k0: k, k1: k + 1, white.shade) }
-        var u = 0.06
-        while u < 1 {
-            c.faceJ(iso, i0: u, i1: u + 0.1, j: 0.05, k0: 0, k1: 9, white.base)
-            c.faceJ(iso, i0: u, i1: u + 0.05, j: 0.05, k0: 8, k1: 10, white.light)
-            u += 1.0 / 3
+        var (c, iso) = canvas(w: 1, d: 0.1, height: 8)
+        let white = PixelRamp(0xFFFFFF, 0xEFE8DC, 0xD2C8BA, 0xA89C90)
+        c.faceJ(iso, i0: 0, i1: 1, j: 0.05, k0: 3, k1: 4, white.shade)
+        for u in [0.1, 0.43, 0.76] {
+            c.faceJ(iso, i0: u, i1: u + 0.12, j: 0.05, k0: 0, k1: 6, white.base)
+            c.faceJ(iso, i0: u, i1: u + 0.06, j: 0.05, k0: 6, k1: 7, white.light)
         }
-        c.outline(strength: 0.35)
         return PixelPiece(canvas: c, origin: [iso.ox, iso.oy])
     }
 

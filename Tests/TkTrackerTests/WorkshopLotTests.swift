@@ -44,7 +44,7 @@ struct WorkshopLotTests {
         let stations = WorkshopStationPlanner.stations(for: members, template: template)
         #expect(stations[members[1].id] == template.seat(desk: 1))
         #expect(stations[members[2].id]?.pose == .wave)
-        #expect(WorkshopRoomTemplate.frontSpots.contains(stations[members[2].id]!))
+        #expect(template.frontSpots.contains(stations[members[2].id]!))
         #expect(WorkshopRoomTemplate.coffeeSpots.contains(stations[members[3].id]!))
         // The waiting lead watches the one teammate who is working.
         #expect(stations[members[0].id] == template.hover(desk: 1))
@@ -63,10 +63,10 @@ struct WorkshopLotTests {
         for desks in 1...WorkshopRoomTemplate.maxDesks {
             let template = WorkshopRoomTemplate(deskCount: desks)
             var stations = (0..<desks).flatMap { [template.seat(desk: $0), template.hover(desk: $0)] }
-            stations += WorkshopRoomTemplate.frontSpots + WorkshopRoomTemplate.coffeeSpots + WorkshopRoomTemplate.couchSpots + [WorkshopRoomTemplate.whiteboard]
+            stations += template.frontSpots + WorkshopRoomTemplate.coffeeSpots + WorkshopRoomTemplate.couchSpots + [WorkshopRoomTemplate.whiteboard]
             for station in stations {
                 #expect(!template.blocked.contains(station.tile), "\(station) is blocked with \(desks) desks")
-                let path = WorkshopPathfinder.path(from: WorkshopRoomTemplate.door, to: station.tile, blocked: template.blocked)
+                let path = WorkshopPathfinder.path(from: WorkshopRoomTemplate.door, to: station.tile, blocked: template.blocked, height: template.length)
                 #expect(path.first == WorkshopRoomTemplate.door && path.last == station.tile)
                 // Each step moves one tile and never crosses furniture.
                 for (a, b) in zip(path, path.dropFirst()) {
@@ -83,19 +83,56 @@ struct WorkshopLotTests {
         #expect(WorkshopPathfinder.path(from: .init(i: 1, j: 1), to: .init(i: 1, j: 1), blocked: []) == [.init(i: 1, j: 1)])
     }
 
-    @Test func roomsKeepTheirSlotsAsOthersComeAndGo() {
-        var slots = WorkshopLotPlan.assignSlots(previous: [:], ids: ["a", "b", "c"])
-        #expect(slots == ["a": 0, "b": 1, "c": 2])
-        slots = WorkshopLotPlan.assignSlots(previous: slots, ids: ["a", "c", "d"])
-        #expect(slots == ["a": 0, "c": 2, "d": 1])
-        #expect(WorkshopLotPlan.assignSlots(previous: [:], ids: ["1", "2", "3", "4", "5"]).count == 4)
+    @Test func desksStayPutAsTeammatesComeAndGo() {
+        var desks = WorkshopDeskPlan.assign(previous: [:], ids: ["a", "b", "c"], capacity: 12)
+        #expect(desks == ["a": 0, "b": 1, "c": 2])
+        desks = WorkshopDeskPlan.assign(previous: desks, ids: ["a", "c", "d"], capacity: 12)
+        #expect(desks == ["a": 0, "c": 2, "d": 1])
+        #expect(WorkshopDeskPlan.assign(previous: [:], ids: (0..<20).map(String.init), capacity: 12).count == 12)
     }
 
-    @Test func backWallsDropOnlyWhereAnotherRoomSitsBehind() {
-        #expect(WorkshopLotPlan.wallHeights(slot: 0, occupied: [0, 1, 2, 3]) == (WorkshopLotPlan.fullWall, WorkshopLotPlan.fullWall))
-        #expect(WorkshopLotPlan.wallHeights(slot: 3, occupied: [0, 1, 2, 3]) == (WorkshopLotPlan.lowWall, WorkshopLotPlan.lowWall))
-        #expect(WorkshopLotPlan.wallHeights(slot: 3, occupied: [3]) == (WorkshopLotPlan.fullWall, WorkshopLotPlan.fullWall))
-        #expect(WorkshopLotPlan.wallHeights(slot: 1, occupied: [0, 1]) == (WorkshopLotPlan.fullWall, WorkshopLotPlan.lowWall))
+    @Test func roomsGrowByBaysWithoutMovingAnyDesk() {
+        #expect(WorkshopRoomTemplate(deskCount: 1).length == 6)
+        #expect(WorkshopRoomTemplate(deskCount: 2).length == 6)
+        #expect(WorkshopRoomTemplate(deskCount: 3).length == 8)
+        #expect(WorkshopRoomTemplate(deskCount: 99).deskCount == WorkshopRoomTemplate.maxDesks)
+        let small = WorkshopRoomTemplate(deskCount: 2), large = WorkshopRoomTemplate(deskCount: 12)
+        #expect(small.seat(desk: 1) == large.seat(desk: 1))
+        // No two desks overlap, and every desk fits inside its room.
+        let tiles = large.furniture.flatMap(\.tiles)
+        #expect(Set(tiles).count == tiles.count)
+        #expect(tiles.allSatisfy { $0.i >= 0 && $0.j >= 0 && $0.i < WorkshopRoomTemplate.width && $0.j < large.length })
+    }
+
+    @Test func sessionsOnOneProjectShareABuilding() {
+        func lead(_ id: String, _ path: String, opened: Double) -> WorkshopAgent {
+            var agent = agent(id, .working)
+            agent.projectPath = path
+            agent.openedAt = Date(timeIntervalSince1970: opened)
+            return agent
+        }
+        let islands = WorkshopIsland.group([lead("a", "/work/app", opened: 1), lead("b", "/work/site", opened: 2),
+                                            lead("c", "/work/app", opened: 3), agent("d", .working, parent: "c")])
+        let projects = WorkshopProject.group(islands)
+        #expect(projects.map(\.path) == ["/work/app", "/work/site"])
+        #expect(projects[0].sessions.map(\.lead.sessionID) == ["a", "c"])
+        #expect(projects[0].agents.count == 3)
+        #expect(projects[0].subagentCount == 1)
+    }
+
+    @Test func aWaitingLeadWatchesItsOwnSubagentFirst() {
+        let members = [agent("one", .working), agent("two", .waitingForAgents), agent("mine", .working, parent: "two")]
+        let template = WorkshopRoomTemplate(deskCount: members.count)
+        let stations = WorkshopStationPlanner.stations(for: members, template: template,
+                                                       teams: ["one": "one", "two": "two", "mine": "two"])
+        #expect(stations[members[1].id] == template.hover(desk: 2))
+    }
+
+    @Test func buildingsLineTheStreetAndOnlySideWallsDrop() {
+        #expect(WorkshopLotPlan.origins(lengths: [6, 8, 6]) == [.init(i: 0, j: 0), .init(i: 0, j: 8), .init(i: 0, j: 18)])
+        #expect(WorkshopLotPlan.bounds(lengths: [6, 8]).1 == .init(i: WorkshopRoomTemplate.width, j: 16))
+        #expect(WorkshopLotPlan.wallHeights(index: 0) == (WorkshopLotPlan.fullWall, WorkshopLotPlan.fullWall))
+        #expect(WorkshopLotPlan.wallHeights(index: 2) == (WorkshopLotPlan.lowWall, WorkshopLotPlan.fullWall))
     }
 
     @Test func looksAndDecorAreStableAndVaried() {

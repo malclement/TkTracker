@@ -51,34 +51,55 @@ struct WorkshopFurniture: Equatable, Sendable {
     var depth: Double { Double(i) + Double(w) / 2 + Double(j) + Double(d) / 2 }
 }
 
-/// One room, one session. The layout is hand-placed and the same for every
-/// team size: desks are added in a fixed order, so a subagent joining never
-/// moves anyone else's desk.
+/// One building per project, shared by every session open on it. The room is
+/// a fixed-depth open office that grows along the street: a lounge at the
+/// street corner, then bays of two desks (one against the back wall, one in the
+/// middle row), then a walkway. Desk n always sits in the same place, so a
+/// room grows by adding bays at the far end and nobody's desk ever moves.
+///
+/// Axes: i runs from the back wall (0) toward the street; j runs along the
+/// street from the lounge end. The walls at i = 0 and j = 0 are drawn; the
+/// street side and the far end are cut away.
 struct WorkshopRoomTemplate: Sendable {
+    /// Depth from the back wall to the street side, in tiles.
     static let width = 7
-    static let height = 6
-    static let maxDesks = 4
-    static let door = WorkshopTile(i: 6, j: 3)
+    static let loungeLength = 3
+    static let bayLength = 2
+    static let maxBays = 6
+    static let maxDesks = maxBays * 2
+    static let door = WorkshopTile(i: 6, j: 2)
     /// Just outside the doorway, where arrivals appear and departures fade.
-    static let outside: SIMD2<Double> = [7.4, 3.5]
+    static let outside: SIMD2<Double> = [7.4, 2.5]
 
+    /// Desks shown (one per displayed member), and the bays that hold them.
     let deskCount: Int
+    let bays: Int
 
-    init(deskCount: Int) { self.deskCount = min(Self.maxDesks, max(1, deskCount)) }
+    init(deskCount: Int) {
+        self.deskCount = min(Self.maxDesks, max(1, deskCount))
+        bays = (self.deskCount + 1) / 2
+    }
 
-    /// Desk footprints and which way the monitor faces (+j or +i).
-    static let desks: [(i: Int, j: Int, w: Int, d: Int, screenFacesI: Bool)] = [
-        (1, 0, 2, 1, false), (4, 0, 2, 1, false), (0, 2, 1, 2, true), (4, 3, 2, 1, false),
-    ]
+    /// The room's length along the street.
+    var length: Int { Self.length(bays: bays) }
+    static func length(bays: Int) -> Int { loungeLength + bays * bayLength + 1 }
+
+    /// Desk n: bay n / 2, back-wall row for even n and middle row for odd n.
+    /// Every desk is two tiles long and faces the street (+i).
+    static func desk(_ n: Int) -> (i: Int, j: Int, w: Int, d: Int) {
+        (n % 2 == 0 ? 0 : 3, loungeLength + (n / 2) * bayLength, 1, bayLength)
+    }
 
     var furniture: [WorkshopFurniture] {
         var items = [
             WorkshopFurniture(kind: .plant, i: 0, j: 0, w: 1, d: 1),
-            WorkshopFurniture(kind: .bookshelf, i: 0, j: 1, w: 1, d: 1),
-            WorkshopFurniture(kind: .coffee, i: 6, j: 0, w: 1, d: 1),
-            WorkshopFurniture(kind: .couch, i: 0, j: 5, w: 3, d: 1),
+            WorkshopFurniture(kind: .coffee, i: 1, j: 0, w: 1, d: 1),
+            WorkshopFurniture(kind: .couch, i: 3, j: 0, w: 3, d: 1),
+            WorkshopFurniture(kind: .plant, i: 6, j: 0, w: 1, d: 1),
+            WorkshopFurniture(kind: .bookshelf, i: 0, j: length - 1, w: 1, d: 1),
         ]
-        for (n, desk) in Self.desks.prefix(deskCount).enumerated() {
+        for n in 0..<deskCount {
+            let desk = Self.desk(n)
             items.append(WorkshopFurniture(kind: .desk(n), i: desk.i, j: desk.j, w: desk.w, d: desk.d))
         }
         return items
@@ -86,56 +107,74 @@ struct WorkshopRoomTemplate: Sendable {
 
     var blocked: Set<WorkshopTile> { Set(furniture.flatMap(\.tiles)) }
 
-    func seat(desk: Int) -> WorkshopStation {
-        switch desk {
-        case 0: return WorkshopStation(tile: .init(i: 2, j: 1), point: [2.0, 1.3], facing: .northEast, pose: .type)
-        case 1: return WorkshopStation(tile: .init(i: 5, j: 1), point: [5.0, 1.3], facing: .northEast, pose: .type)
-        case 2: return WorkshopStation(tile: .init(i: 1, j: 3), point: [1.3, 3.0], facing: .northWest, pose: .type)
-        default: return WorkshopStation(tile: .init(i: 5, j: 4), point: [5.0, 4.3], facing: .northEast, pose: .type)
-        }
+    /// Sitting at desk n, facing its monitor (toward the back wall).
+    func seat(desk n: Int) -> WorkshopStation {
+        let desk = Self.desk(n)
+        return WorkshopStation(tile: .init(i: desk.i + 1, j: desk.j + 1), point: [Double(desk.i) + 1.3, Double(desk.j) + 1.0],
+                               facing: .northWest, pose: .type)
     }
 
-    /// Where a waiting agent stands to watch someone else's desk.
-    func hover(desk: Int) -> WorkshopStation {
-        switch desk {
-        case 0: return WorkshopStation(tile: .init(i: 3, j: 2), point: [3.4, 2.4], facing: .northWest, pose: .wait)
-        case 1: return WorkshopStation(tile: .init(i: 4, j: 2), point: [4.5, 2.5], facing: .northEast, pose: .wait)
-        case 2: return WorkshopStation(tile: .init(i: 2, j: 2), point: [2.5, 2.6], facing: .northWest, pose: .wait)
-        default: return WorkshopStation(tile: .init(i: 3, j: 4), point: [3.5, 4.5], facing: .southEast, pose: .wait)
-        }
+    /// Where a waiting agent stands to watch someone at desk n: just behind them.
+    func hover(desk n: Int) -> WorkshopStation {
+        let desk = Self.desk(n)
+        return WorkshopStation(tile: .init(i: desk.i + 2, j: desk.j + 1), point: [Double(desk.i) + 2.4, Double(desk.j) + 1.5],
+                               facing: .northWest, pose: .wait)
     }
 
-    static let whiteboard = WorkshopStation(tile: .init(i: 3, j: 1), point: [3.5, 1.5], facing: .northEast, pose: .wait)
+    /// Needing you: at the open far end of the room, facing out.
+    var frontSpots: [WorkshopStation] {
+        [4, 5, 6, 2].map { i in WorkshopStation(tile: .init(i: i, j: length - 1), point: [Double(i) + 0.5, Double(length) - 0.5], facing: .southWest, pose: .wave) }
+    }
+
+    /// The whiteboard hangs on the back wall in the lounge.
+    static let whiteboard = WorkshopStation(tile: .init(i: 1, j: 2), point: [1.4, 2.0], facing: .northWest, pose: .wait)
     static let coffeeSpots = [
-        WorkshopStation(tile: .init(i: 6, j: 1), point: [6.5, 1.5], facing: .northEast, pose: .stand),
-        WorkshopStation(tile: .init(i: 6, j: 2), point: [6.5, 2.5], facing: .northEast, pose: .stand),
+        WorkshopStation(tile: .init(i: 1, j: 1), point: [1.5, 1.4], facing: .northEast, pose: .stand),
+        WorkshopStation(tile: .init(i: 2, j: 1), point: [2.5, 1.6], facing: .northEast, pose: .stand),
     ]
+    /// Seats on the couch, which stands against the side wall facing into the room.
     static let couchSpots = [
-        WorkshopStation(tile: .init(i: 1, j: 4), point: [1.5, 5.45], facing: .southWest, pose: .sit),
-        WorkshopStation(tile: .init(i: 0, j: 4), point: [0.6, 5.45], facing: .southWest, pose: .sit),
-        WorkshopStation(tile: .init(i: 2, j: 4), point: [2.4, 5.45], facing: .southWest, pose: .sit),
-    ]
-    static let frontSpots = [
-        WorkshopStation(tile: .init(i: 4, j: 5), point: [4.5, 5.5], facing: .southWest, pose: .wave),
-        WorkshopStation(tile: .init(i: 5, j: 5), point: [5.5, 5.5], facing: .southWest, pose: .wave),
-        WorkshopStation(tile: .init(i: 6, j: 5), point: [6.5, 5.5], facing: .southWest, pose: .wave),
+        WorkshopStation(tile: .init(i: 4, j: 1), point: [4.5, 0.45], facing: .southWest, pose: .sit),
+        WorkshopStation(tile: .init(i: 3, j: 1), point: [3.6, 0.45], facing: .southWest, pose: .sit),
+        WorkshopStation(tile: .init(i: 5, j: 1), point: [5.4, 0.45], facing: .southWest, pose: .sit),
     ]
 }
 
-/// Where each member of a team goes for its current state. Members are the
-/// lead followed by the displayed subagents; member n owns desk n.
+/// Desks are handed out like parking spaces: whoever has one keeps it, and a
+/// newcomer takes the lowest free one.
+enum WorkshopDeskPlan {
+    static func assign(previous: [String: Int], ids: [String], capacity: Int) -> [String: Int] {
+        let wanted = Set(ids)
+        var result = previous.filter { wanted.contains($0.key) && $0.value < capacity }
+        var taken = Set(result.values)
+        for id in ids where result[id] == nil {
+            guard let free = (0..<capacity).first(where: { !taken.contains($0) }) else { break }
+            result[id] = free
+            taken.insert(free)
+        }
+        return result
+    }
+}
+
+/// Where each member of a building goes for its current state. `desks` maps a
+/// member to its desk; without it, member n owns desk n. `teams` maps each
+/// member to its session's lead, so a waiting lead watches its own subagents.
 enum WorkshopStationPlanner {
-    static func stations(for members: [WorkshopAgent], template: WorkshopRoomTemplate) -> [String: WorkshopStation] {
+    static func stations(for members: [WorkshopAgent], template: WorkshopRoomTemplate,
+                         desks: [String: Int]? = nil, teams: [String: String] = [:]) -> [String: WorkshopStation] {
+        let desks = desks ?? Dictionary(uniqueKeysWithValues: members.enumerated().map { ($1.id, $0) })
         var result: [String: WorkshopStation] = [:]
-        var front = WorkshopRoomTemplate.frontSpots[...]
+        var front = template.frontSpots[...]
         var coffee = WorkshopRoomTemplate.coffeeSpots[...]
         let idle = members.filter { $0.state == .idle }
         var couch = WorkshopRoomTemplate.couchSpots[...]
-        var watched = Set<Int>()
+        var watched = Set<String>()
         var whiteboardTaken = false
+        func team(_ agent: WorkshopAgent) -> String { teams[agent.id] ?? agent.parentID ?? agent.id }
 
-        for (desk, agent) in members.enumerated() {
-            let seat = template.seat(desk: min(desk, template.deskCount - 1))
+        for agent in members {
+            let desk = min(desks[agent.id] ?? 0, template.deskCount - 1)
+            let seat = template.seat(desk: desk)
             let standing = WorkshopStation(tile: seat.tile, point: seat.tile.center, facing: .southWest, pose: .stand)
             switch agent.state {
             case .working, .usingTool:
@@ -153,12 +192,12 @@ enum WorkshopStationPlanner {
                     result[agent.id] = standing
                 }
             case .waitingForAgents:
-                let target = members.enumerated().first { index, other in
-                    index != desk && other.state.isWorking && !watched.contains(index)
-                }?.offset
-                if let target {
-                    watched.insert(target)
-                    result[agent.id] = template.hover(desk: min(target, template.deskCount - 1))
+                // Watch a working teammate from this session first, then anyone working.
+                let candidates = members.filter { $0.id != agent.id && $0.state.isWorking && !watched.contains($0.id) }
+                let target = candidates.first { team($0) == team(agent) } ?? candidates.first
+                if let target, let targetDesk = desks[target.id], targetDesk < template.deskCount {
+                    watched.insert(target.id)
+                    result[agent.id] = template.hover(desk: targetDesk)
                 } else if !whiteboardTaken {
                     whiteboardTaken = true
                     result[agent.id] = WorkshopRoomTemplate.whiteboard
@@ -179,7 +218,7 @@ enum WorkshopStationPlanner {
 /// step, so a Sim can never get stuck out of sight.
 enum WorkshopPathfinder {
     static func path(from start: WorkshopTile, to goal: WorkshopTile, blocked: Set<WorkshopTile>,
-                     width: Int = WorkshopRoomTemplate.width, height: Int = WorkshopRoomTemplate.height) -> [WorkshopTile] {
+                     width: Int = WorkshopRoomTemplate.width, height: Int = WorkshopRoomTemplate.length(bays: WorkshopRoomTemplate.maxBays)) -> [WorkshopTile] {
         guard start != goal else { return [goal] }
         func inside(_ t: WorkshopTile) -> Bool { t.i >= 0 && t.j >= 0 && t.i < width && t.j < height }
         guard inside(goal), !blocked.contains(goal) else { return [start, goal] }
@@ -213,37 +252,35 @@ enum WorkshopPathfinder {
     }
 }
 
-/// Up to four rooms on one lot, in a 2×2 grid with a garden path between them.
+/// Buildings stand in a row along the street, one per project, in the order
+/// their projects first opened. A building that grows pushes its neighbours
+/// further down the street.
 enum WorkshopLotPlan {
-    static let slotOrigins = [WorkshopTile(i: 0, j: 0), WorkshopTile(i: 9, j: 0), WorkshopTile(i: 0, j: 8), WorkshopTile(i: 9, j: 8)]
+    static let maxBuildings = 6
+    /// Lawn between neighbouring buildings.
+    static let gap = 2
     static let fullWall = 40
     static let lowWall = 16
 
-    /// Existing rooms keep their slot; newcomers take the first free one.
-    static func assignSlots(previous: [String: Int], ids: [String]) -> [String: Int] {
-        var result = previous.filter { ids.contains($0.key) && $0.value < slotOrigins.count }
-        for id in ids where result[id] == nil {
-            guard let free = (0..<slotOrigins.count).first(where: { !result.values.contains($0) }) else { break }
-            result[id] = free
+    /// Each building's origin, given the room lengths in street order.
+    static func origins(lengths: [Int]) -> [WorkshopTile] {
+        var j = 0
+        return lengths.map { length in
+            defer { j += length + gap }
+            return WorkshopTile(i: 0, j: j)
         }
-        return result
     }
 
-    /// Back walls stand full height unless a room sits behind them, where they
-    /// would hide that room. Cut-away walls are the Sims convention.
-    static func wallHeights(slot: Int, occupied: Set<Int>) -> (backRight: Int, backLeft: Int) {
-        let behind = slot >= 2 ? slot - 2 : nil
-        let left = slot % 2 == 1 ? slot - 1 : nil
-        return (behind.map { occupied.contains($0) } == true ? lowWall : fullWall,
-                left.map { occupied.contains($0) } == true ? lowWall : fullWall)
+    /// The side wall drops where another building stands behind it, so it
+    /// doesn't hide that building's far end. The back wall never hides anything.
+    static func wallHeights(index: Int) -> (backRight: Int, backLeft: Int) {
+        (index > 0 ? lowWall : fullWall, fullWall)
     }
 
-    /// Tile bounds of the occupied slots: (minimum, maximum exclusive).
-    static func bounds(occupied: Set<Int>) -> (WorkshopTile, WorkshopTile) {
-        let origins = occupied.sorted().map { slotOrigins[$0] }
-        guard !origins.isEmpty else { return (.init(i: 0, j: 0), .init(i: WorkshopRoomTemplate.width, j: WorkshopRoomTemplate.height)) }
-        return (.init(i: origins.map(\.i).min()!, j: origins.map(\.j).min()!),
-                .init(i: origins.map(\.i).max()! + WorkshopRoomTemplate.width, j: origins.map(\.j).max()! + WorkshopRoomTemplate.height))
+    /// Tile bounds of the buildings: (minimum, maximum exclusive).
+    static func bounds(lengths: [Int]) -> (WorkshopTile, WorkshopTile) {
+        let total = max(1, lengths.reduce(0, +) + max(0, lengths.count - 1) * gap)
+        return (.init(i: 0, j: 0), .init(i: WorkshopRoomTemplate.width, j: total))
     }
 }
 
