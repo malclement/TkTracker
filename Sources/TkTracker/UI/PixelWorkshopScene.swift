@@ -175,15 +175,16 @@ final class PixelWorkshopScene: SKScene {
     }
 
     /// Beyond the drawn field the view shows this same grass, so edges never show.
-    static let grass = NSColor(hex: 0x78C45E)
+    static let grass = NSColor(hex: 0x88BF6A)
 
     private func updateGround(occupied: Set<Int>) {
         let (lower, upper) = WorkshopLotPlan.bounds(occupied: occupied)
         let lawnLower = WorkshopTile(i: lower.i - 1, j: lower.j - 1), lawnUpper = WorkshopTile(i: upper.i + 1, j: upper.j + 1)
         let street = lawnUpper.i
-        let field = (WorkshopTile(i: lawnLower.i - 14, j: lawnLower.j - 14), WorkshopTile(i: street + 16, j: lawnUpper.j + 14))
-        // Stepping stones from each door to the sidewalk. Rooms with a neighbour
-        // to the east go round it, down the garden path between the columns.
+        // The street runs well past the view in both directions, so its ends never show.
+        let field = (WorkshopTile(i: lawnLower.i - 14, j: lawnLower.j - 30), WorkshopTile(i: street + 16, j: lawnUpper.j + 30))
+        // Paths from each door to the sidewalk. Rooms with a neighbour to the
+        // east go round it, down the garden path between the columns.
         var paths = Set<WorkshopTile>()
         for slot in occupied {
             let origin = WorkshopLotPlan.slotOrigins[slot]
@@ -198,13 +199,40 @@ final class PixelWorkshopScene: SKScene {
                 for i in east..<street { paths.insert(WorkshopTile(i: i, j: doorJ)) }
             }
         }
+        /// True when a spot is clear of every path tile, with `margin` tiles to spare.
+        func clearOfPaths(_ i: Double, _ j: Double, margin: Double = 0.7) -> Bool {
+            !paths.contains { Double($0.i) - margin < i && i < Double($0.i + 1) + margin && Double($0.j) - margin < j && j < Double($0.j + 1) + margin }
+        }
+        // Gardens fill the empty slots inside the lot. Only low planting: a
+        // tree here would hide the room behind it.
+        let emptySlots = (0..<WorkshopLotPlan.slotOrigins.count).filter { slot in
+            let o = WorkshopLotPlan.slotOrigins[slot]
+            return !occupied.contains(slot) && o.i >= lower.i && o.j >= lower.j && o.i < upper.i && o.j < upper.j
+        }
+        var beds: [WorkshopTile] = []
+        var gardenPieces: [(key: String, spot: SIMD2<Double>)] = []
+        for slot in emptySlots {
+            let o = WorkshopLotPlan.slotOrigins[slot]
+            let (oi, oj) = (Double(o.i), Double(o.j))
+            let bedRow = [1, 4].first { r in (0..<2).allSatisfy { dj in (1..<6).allSatisfy { di in
+                !paths.contains(WorkshopTile(i: o.i + di, j: o.j + r + dj)) } } }
+            if let bedRow {
+                beds.append(WorkshopTile(i: o.i + 1, j: o.j + bedRow))
+                gardenPieces.append(("bench", [oi + 4.4, Double(o.j + bedRow) + 0.5]))
+            }
+            for (n, spot) in [SIMD2<Double>(oi + 0.8, oj + 0.9), [oi + 6.2, oj + 0.9], [oi + 0.9, oj + 5.4], [oi + 6.3, oj + 5.3]].enumerated()
+                where clearOfPaths(spot.x, spot.y, margin: 0.3) {
+                gardenPieces.append(("bush|\(n % 2)", spot))
+            }
+        }
+        let rooms = occupied.sorted().map { WorkshopLotPlan.slotOrigins[$0] }
         let key = "ground|\(field.0.i),\(field.0.j),\(field.1.i),\(field.1.j)|\(occupied.sorted())"
         guard key != groundKey else { return }
         groundKey = key
         lawn = (lawnLower, lawnUpper)
         streetI = street
         groundNode.show(PixelTextures.shared.piece(key) {
-            PixelRooms.ground(field: field, lawn: (lawnLower, lawnUpper), streetI: street, paths: paths, seed: workshopHash(key))
+            PixelRooms.ground(field: field, lawn: (lawnLower, lawnUpper), streetI: street, paths: paths, rooms: rooms, beds: beds, seed: workshopHash(key))
         })
         groundNode.position = scenePoint(Double(field.0.i), Double(field.0.j))
 
@@ -221,6 +249,11 @@ final class PixelWorkshopScene: SKScene {
             world.addChild(node)
             scenery.append(node)
         }
+        func piece(_ key: String) -> PixelPiece {
+            if key == "bench" { return PixelRooms.bench() }
+            let variant = Int(key.split(separator: "|").last ?? "") ?? 0
+            return key.hasPrefix("bush") ? PixelRooms.bush(variant) : PixelRooms.tree(variant)
+        }
         func free(_ i: Double, _ j: Double) -> Bool {
             let onLot = i > Double(lawnLower.i) - 1 && j > Double(lawnLower.j) - 1 && i < Double(lawnUpper.i) && j < Double(lawnUpper.j) + 0.5
             let onStreet = i > Double(street) - 0.8 && i < Double(street) + 4.6
@@ -228,32 +261,39 @@ final class PixelWorkshopScene: SKScene {
         }
         // A hedge along the lot's back edges marks where the lot ends.
         var k = Double(lawnLower.i) + 0.6
-        while k < Double(lawnUpper.i) - 0.4 { add("bush|\(Int(k) % 3)", at: [k, Double(lawnLower.j) + 0.45]) { PixelRooms.bush(Int(k) % 3) }; k += 1.3 }
-        k = Double(lawnLower.j) + 1.9
-        while k < Double(lawnUpper.j) - 0.4 { add("bush|\(Int(k) % 3)", at: [Double(lawnLower.i) + 0.45, k]) { PixelRooms.bush(Int(k) % 3) }; k += 1.3 }
-        // Gardens fill the empty slots inside the lot.
-        for slot in 0..<WorkshopLotPlan.slotOrigins.count where !occupied.contains(slot) {
-            let o = WorkshopLotPlan.slotOrigins[slot]
-            guard o.i >= lower.i, o.j >= lower.j, o.i < upper.i, o.j < upper.j else { continue }
-            for (n, spot) in [SIMD2<Double>(Double(o.i) + 2, Double(o.j) + 2), [Double(o.i) + 5, Double(o.j) + 1.5], [Double(o.i) + 3.5, Double(o.j) + 4.5]].enumerated() {
-                add("tree|\(n % 2)", at: spot) { PixelRooms.tree(n % 2) }
-            }
+        while k < Double(lawnUpper.i) - 0.4 { add("bush|\(Int(k) % 3)", at: [k, Double(lawnLower.j) + 0.45]) { PixelRooms.bush(Int(k) % 3) }; k += 1.1 }
+        k = Double(lawnLower.j) + 1.7
+        while k < Double(lawnUpper.j) - 0.4 { add("bush|\(Int(k) % 3)", at: [Double(lawnLower.i) + 0.45, k]) { PixelRooms.bush(Int(k) % 3) }; k += 1.1 }
+        // A picket fence along the front edge, open where it meets the sidewalk.
+        for i in lawnLower.i..<lawnUpper.i {
+            add("fence", at: [Double(i), Double(lawnUpper.j) - 0.1]) { PixelRooms.fence() }
         }
-        // Trees scattered around the neighbourhood.
-        for n in 0..<70 {
-            let h = workshopHash("\(key)-tree-\(n)")
-            let i = Double(field.0.i) + Double(h % 1000) / 1000 * Double(field.1.i - field.0.i)
-            let j = Double(field.0.j) + Double((h >> 12) % 1000) / 1000 * Double(field.1.j - field.0.j)
-            guard free(i, j) else { continue }
-            if n % 3 == 0 { add("bush|\(n % 3)", at: [i, j]) { PixelRooms.bush(n % 3) } }
-            else { add("tree|\(n % 2)", at: [i, j]) { PixelRooms.tree(n % 2) } }
+        for garden in gardenPieces { add(garden.key, at: garden.spot) { piece(garden.key) } }
+        // Trees round the neighbourhood on a jittered grid, so they never pile up.
+        let spacing = 2.6
+        var gi = Double(field.0.i) + 1
+        while gi < Double(field.1.i) - 1 {
+            var gj = Double(field.0.j) + 1
+            while gj < Double(field.1.j) - 1 {
+                let h = workshopHash("\(key)-tree-\(Int(gi * 10)),\(Int(gj * 10))")
+                let i = gi + Double(h % 100) / 100 * spacing * 0.8, j = gj + Double((h >> 8) % 100) / 100 * spacing * 0.8
+                gj += spacing
+                // Thin near the lot so it stays the subject; fuller further out.
+                let distance = max(Double(lawnLower.i) - i, i - Double(street + 4), Double(lawnLower.j) - j, j - Double(lawnUpper.j), 0)
+                let keep = min(0.42, 0.08 + distance * 0.045)
+                guard Double((h >> 16) % 1000) / 1000 < keep, free(i, j) else { continue }
+                let kind = (h >> 28) % 7
+                let name = kind < 2 ? "bush|\(kind)" : "tree|\(kind % 3)"
+                add(name, at: [i, j]) { piece(name) }
+            }
+            gi += spacing
         }
         // Streetlamps on the far sidewalk, so they never stand in front of a room.
         var j = Double(field.0.j) + 2.5
         while j < Double(field.1.j) {
             add("streetlamp", at: [Double(street) + 3.75, j]) { PixelRooms.streetlamp(lit: true) }
             let glow = SKSpriteNode()
-            glow.show(PixelTextures.shared.piece("glow-street") { PixelPiece(canvas: PixelSims.glow(width: 80, height: 44, color: PixelColor(0xFFE2A0)), origin: [40, 22]) })
+            glow.show(PixelTextures.shared.piece("glow-street") { PixelPiece(canvas: PixelSims.glow(width: 80, height: 44, color: PixelColor(0xFFCF78)), origin: [40, 22]) })
             glow.blendMode = .add
             glow.zPosition = Layer.glow
             glow.position = scenePoint(Double(street) + 3.2, j, 2) // a pool of light on the ground
@@ -418,6 +458,8 @@ private final class RoomNode: SKNode {
     private var stubs: [SKSpriteNode] = []
     private let sign = SKSpriteNode()
     private let overflowNode = SKSpriteNode()
+    /// Warm ceiling light at night, on while anyone in the room is at work.
+    private let roomLight = SKSpriteNode()
     private var signText = ""
     private var sims: [String: SimNode] = [:]
     private var leaving: [SimNode] = []
@@ -446,6 +488,14 @@ private final class RoomNode: SKNode {
         addChild(mat)
         addChild(sign)
         addChild(overflowNode)
+        roomLight.show(PixelTextures.shared.piece("glow-room") {
+            PixelPiece(canvas: PixelSims.glow(width: 196, height: 98, color: PixelColor(0xFFC070), intensity: 0.85), origin: [98, 49])
+        })
+        roomLight.blendMode = .add
+        roomLight.zPosition = Layer.glow - 1
+        roomLight.position = point(Double(WorkshopRoomTemplate.width) / 2, Double(WorkshopRoomTemplate.height) / 2, 6)
+        roomLight.isHidden = true
+        addChild(roomLight)
     }
     required init?(coder: NSCoder) { nil }
 
@@ -577,6 +627,8 @@ private final class RoomNode: SKNode {
             screenGlow.position = point(monitor.x, monitor.y, 21)
             screenGlow.isHidden = !(dark && working)
         }
+
+        roomLight.isHidden = !(dark && members.contains { $0.state.isWorking || $0.state == .needsInput || $0.state == .waitingForAgents })
 
         // Signage.
         let title = island.lead.projectName

@@ -266,16 +266,23 @@ enum PixelRooms {
 
     // MARK: Neighbourhood
 
-    static let grassBase = PixelColor(0x78C45E)
+    /// Meadow beyond the lot. `base` is also the scene's background colour.
+    static let meadow = PixelRamp(0xA2D284, 0x88BF6A, 0x7BB262, 0x6AA35A)
+    static let grassBase = meadow.base
+    /// Mowed stripes on the lot itself, a touch brighter than the meadow.
+    static let mowed = (PixelColor(0x96CB74), PixelColor(0x8CC46C))
+    static let gravel = PixelRamp(0xEAE2D0, 0xDDD2BC, 0xC4B79E, 0xA69880)
     static let asphalt = PixelRamp(0x7A7E90, 0x5E6274, 0x4A4E60, 0x363A4A)
     static let pavement = PixelRamp(0xE8E2D4, 0xD4CCBA, 0xB8AE9C, 0x8E8676)
+    private static let groundShadow = PixelColor(0x1C1030, alpha: 38)
 
-    /// The ground around the lot: a mowed lawn under the rooms, plain grass
-    /// beyond it, and a street with sidewalks along the side the doors face.
+    /// The ground around the lot: a mowed lawn under the rooms, meadow beyond
+    /// it, and a street with sidewalks along the side the doors face.
     /// `field` is the whole drawn area; `lawn` the lot itself; the street runs
-    /// along j at `streetI` (sidewalk, two lanes, sidewalk).
+    /// along j at `streetI` (sidewalk, two lanes, sidewalk). `rooms` are the
+    /// occupied room origins, which cast a shadow on the grass.
     static func ground(field: (WorkshopTile, WorkshopTile), lawn: (WorkshopTile, WorkshopTile), streetI: Int,
-                       paths: Set<WorkshopTile>, seed: UInt64) -> PixelPiece {
+                       paths: Set<WorkshopTile>, rooms: [WorkshopTile], beds: [WorkshopTile], seed: UInt64) -> PixelPiece {
         let (lower, upper) = field
         let W = Double(upper.i - lower.i), D = Double(upper.j - lower.j)
         let ox = D * 16 + 2, oy = 2.0
@@ -295,44 +302,108 @@ enum PixelRooms {
                     c.flat(iso, i: x, j: y, w: 1, d: 1, j % 2 == 0 ? asphalt.base : asphalt.base.mixed(with: asphalt.shade, 0.25))
                     if street == 1 && j % 2 == 0 { c.flat(iso, i: x + 0.95, j: y + 0.2, w: 0.1, d: 0.6, PixelColor(0xF0D36A)) }
                 default:
-                    let lawnTile = onLawn(i, j)
-                    c.flat(iso, i: x, j: y, w: 1, d: 1, lawnTile && (i + j) % 2 == 0 ? PixelColor(0x84CC66) : grassBase)
+                    if onLawn(i, j) {
+                        // Stripes run parallel to the street, like a mower's passes.
+                        c.flat(iso, i: x, j: y, w: 1, d: 1, i % 2 == 0 ? mowed.0 : mowed.1)
+                        continue
+                    }
+                    // Meadow: soft patches a few tiles across, fading to plain
+                    // grass near the edge so the field meets the background.
+                    let edge = min(x, y, W - x - 1, D - y - 1)
+                    let weight = max(0, min(1, (edge - 1) / 4))
+                    for (du, dv) in [(0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5)] {
+                        let n = 0.5 + (patchNoise(Double(i) + du, Double(j) + dv, seed: seed) - 0.5) * weight
+                        let color = n < 0.36 ? meadow.base.mixed(with: meadow.shade, 0.55) : n > 0.66 ? meadow.base.mixed(with: meadow.light, 0.28) : meadow.base
+                        c.flat(iso, i: x + du, j: y + dv, w: 0.5, d: 0.5, color)
+                    }
                 }
             }
         }
-        // Tufts and flowers, never on the street.
-        for n in 0..<Int(W * D * 1.3) {
+        // A crisp mown edge around the lot, on the sides that meet the meadow.
+        let lx = Double(lawn.0.i - lower.i), ly = Double(lawn.0.j - lower.j)
+        let lw = Double(lawn.1.i - lawn.0.i), ld = Double(lawn.1.j - lawn.0.j)
+        c.flat(iso, i: lx, j: ly, w: lw, d: 0.06, meadow.deep)
+        c.flat(iso, i: lx, j: ly, w: 0.06, d: ld, meadow.deep)
+        c.flat(iso, i: lx, j: ly + ld - 0.06, w: lw, d: 0.06, meadow.deep)
+        // Tufts and flowers, never on the street or the mowed lot.
+        for n in 0..<Int(W * D * 1.1) {
             let h = workshopHash("\(seed)-tuft-\(n)")
             let fi = Double(h % 1000) / 1000 * W, fj = Double((h >> 12) % 1000) / 1000 * D
-            let street = Int(fi) + lower.i - streetI
+            let ti = Int(fi) + lower.i, tj = Int(fj) + lower.j
+            let street = ti - streetI
             guard street < 0 || street > 3 else { continue }
             let p = iso.p(fi, fj)
-            let flower = n % 11 == 0
-            c.plot(Int(p.x), Int(p.y), flower ? [PixelColor(0xFFF1A8), PixelColor(0xFFB0C8), PixelColor(0xFFFFFF)][n % 3] : grass.shade)
-            if !flower { c.plot(Int(p.x) + 1, Int(p.y) - 1, grass.light) }
+            let flower = n % 9 == 0
+            if onLawn(ti, tj) && !flower { continue }
+            c.plot(Int(p.x), Int(p.y), flower ? [PixelColor(0xFFF1A8), PixelColor(0xFFB0C8), PixelColor(0xFFFFFF), PixelColor(0xC8B8FF)][n % 4] : meadow.deep)
+            if !flower { c.plot(Int(p.x) + 1, Int(p.y) - 1, meadow.light) }
         }
+        // Rooms cast a short shadow down and to the right of their footprint.
+        let rw = Double(WorkshopRoomTemplate.width), rd = Double(WorkshopRoomTemplate.height)
+        for room in rooms {
+            let x = Double(room.i - lower.i), y = Double(room.j - lower.j)
+            let (dx, dy) = (0.42, 0.3)
+            c.poly([iso.p(x + rw, y + dy), iso.p(x + rw + dx, y + dy), iso.p(x + rw + dx, y + rd + dy),
+                    iso.p(x + dx, y + rd + dy), iso.p(x + dx, y + rd), iso.p(x + rw, y + rd)], groundShadow)
+        }
+        // Flower beds in the gardens: soil edged in brick, dotted with blooms.
+        for (n, bed) in beds.enumerated() {
+            let x = Double(bed.i - lower.i), y = Double(bed.j - lower.j)
+            c.flat(iso, i: x, j: y, w: 3, d: 1.4, PixelColor(0xC98A62))
+            c.flat(iso, i: x + 0.1, j: y + 0.1, w: 2.8, d: 1.2, PixelColor(0x8A5E40))
+            c.flat(iso, i: x + 0.18, j: y + 0.18, w: 2.64, d: 1.04, leaf.base.mixed(with: leaf.shade, 0.4))
+            let blooms = [PixelColor(0xFFB0C8), PixelColor(0xFFF1A8), PixelColor(0xFFFFFF), PixelColor(0xF08A7A), PixelColor(0xC8B8FF)]
+            for k in 0..<46 {
+                let h = workshopHash("bed-\(n)-\(k)")
+                let p = iso.p(x + 0.3 + Double(h % 100) / 100 * 2.4, y + 0.3 + Double((h >> 8) % 100) / 100 * 0.8)
+                c.plot(Int(p.x), Int(p.y) + 1, leaf.shade)
+                c.plot(Int(p.x), Int(p.y), blooms[k % blooms.count])
+                c.plot(Int(p.x) + 1, Int(p.y), blooms[k % blooms.count].mixed(with: PixelColor(0x6A3A5A), 0.25))
+            }
+        }
+        // Gravel paths: one continuous strip, edged only where it meets grass.
         for tile in paths {
             let i = Double(tile.i - lower.i), j = Double(tile.j - lower.j)
-            c.flat(iso, i: i + 0.22, j: j + 0.26, w: 0.56, d: 0.48, PixelColor(0xB8AE9E))
-            c.flat(iso, i: i + 0.26, j: j + 0.28, w: 0.48, d: 0.38, PixelColor(0xD8D0C0))
+            func open(_ di: Int, _ dj: Int) -> Bool { !paths.contains(WorkshopTile(i: tile.i + di, j: tile.j + dj)) }
+            let (w0, w1, d0, d1) = (open(-1, 0) ? 0.14 : 0, open(1, 0) ? 0.14 : 0, open(0, -1) ? 0.14 : 0, open(0, 1) ? 0.14 : 0)
+            c.flat(iso, i: i + w0, j: j + d0, w: 1 - w0 - w1, d: 1 - d0 - d1, gravel.shade)
+            c.flat(iso, i: i + w0 * 1.5, j: j + d0 * 1.5, w: 1 - (w0 + w1) * 1.5, d: 1 - (d0 + d1) * 1.5, gravel.base)
+            for k in 0..<5 {
+                let h = workshopHash("gravel-\(tile.i)-\(tile.j)-\(k)")
+                let p = iso.p(i + 0.25 + Double(h % 100) / 200, j + 0.25 + Double((h >> 8) % 100) / 200)
+                c.plot(Int(p.x), Int(p.y), k % 2 == 0 ? gravel.deep : gravel.light)
+            }
         }
         return PixelPiece(canvas: c, origin: [ox, oy])
     }
 
+    /// Smooth value noise in 0…1, for grass patches a few tiles across.
+    private static func patchNoise(_ x: Double, _ y: Double, seed: UInt64, cell: Double = 3.2) -> Double {
+        let gx = x / cell, gy = y / cell
+        let x0 = gx.rounded(.down), y0 = gy.rounded(.down)
+        func v(_ a: Double, _ b: Double) -> Double { Double(workshopHash("\(seed)|\(Int(a))|\(Int(b))") % 1000) / 1000 }
+        let tx = gx - x0, ty = gy - y0
+        let sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty)
+        let top = v(x0, y0) * (1 - sx) + v(x0 + 1, y0) * sx
+        let bottom = v(x0, y0 + 1) * (1 - sx) + v(x0 + 1, y0 + 1) * sx
+        return top * (1 - sy) + bottom * sy
+    }
+
     /// A streetlamp; the light itself is a separate glow sprite at night.
     static func streetlamp(lit: Bool) -> PixelPiece {
-        var c = PixelCanvas(width: 12, height: 44)
+        var c = PixelCanvas(width: 16, height: 46)
         let post = PixelRamp(0x6A7090, 0x4A5070, 0x343A56, 0x22263A)
         c.rect(4, 41, 5, 2, post.shade)
         c.rect(5, 8, 2, 34, post.base); c.rect(5, 8, 1, 34, post.light)
         c.rect(2, 4, 8, 3, post.shade); c.rect(3, 3, 6, 1, post.base)
         c.rect(3, 7, 6, 2, lit ? PixelColor(0xFFF0B8) : PixelColor(0xB8BCCE))
         c.outline(strength: 0.5)
+        c.groundShadow(cx: 8, cy: 43, rx: 5, ry: 2)
         return PixelPiece(canvas: c, origin: [6, 43])
     }
 
     static func bush(_ variant: Int) -> PixelPiece {
-        var c = PixelCanvas(width: 22, height: 16)
+        var c = PixelCanvas(width: 24, height: 17)
         let foliage = variant % 2 == 0 ? leaf : PixelRamp(0xC8E888, 0x84C45A, 0x58963E, 0x3A6A30)
         for (bx, by, r) in [(7.0, 9.0, 6.0), (14.0, 8.0, 6.5), (10.5, 5.5, 5.0)] {
             for y in Int(by - r)...Int(by + r) {
@@ -344,6 +415,7 @@ enum PixelRooms {
         }
         if variant % 3 == 0 { for (x, y) in [(6, 6), (12, 4), (16, 9)] { c.plot(x, y, PixelColor(0xFFB0C8)) } }
         c.outline(strength: 0.55)
+        c.groundShadow(cx: 12, cy: 14.5, rx: 10, ry: 2.5, alpha: 56)
         return PixelPiece(canvas: c, origin: [11, 14])
     }
 
@@ -353,11 +425,13 @@ enum PixelRooms {
         c.rect(1, 1, 8, 6, PixelColor(0x3F6FD0)); c.rect(1, 1, 8, 1, PixelColor(0x7AA0F0))
         c.rect(8, 1, 1, 3, PixelColor(0xE8645A))
         c.outline(strength: 0.5)
+        c.groundShadow(cx: 6, cy: 17, rx: 3.5, ry: 1.2)
         return PixelPiece(canvas: c, origin: [5, 17])
     }
 
     static func tree(_ variant: Int) -> PixelPiece {
-        var c = PixelCanvas(width: 34, height: 48)
+        if variant % 3 == 2 { return conifer() }
+        var c = PixelCanvas(width: 38, height: 49)
         let trunk = darkWood
         c.rect(15, 32, 4, 14, trunk.base); c.rect(15, 32, 1, 14, trunk.light); c.rect(18, 32, 1, 14, trunk.shade)
         let foliage = variant % 2 == 0 ? leaf : PixelRamp(0xC8E888, 0x84C45A, 0x58963E, 0x3A6A30)
@@ -377,12 +451,61 @@ enum PixelRooms {
             c.plot(Int(h % 26) + 4, Int((h >> 8) % 28) + 5, foliage.deep)
         }
         c.outline(strength: 0.55)
+        // The canopy's shadow falls a little to the right of the trunk.
+        c.groundShadow(cx: 19.5, cy: 45.5, rx: 12, ry: 3.5)
         return PixelPiece(canvas: c, origin: [17, 46])
+    }
+
+    /// A small pine: stacked tiers, lit on the left like everything else.
+    private static func conifer() -> PixelPiece {
+        var c = PixelCanvas(width: 30, height: 52)
+        let needles = PixelRamp(0x8CCB7A, 0x4F9A5E, 0x357250, 0x22503E)
+        c.rect(13, 40, 4, 9, darkWood.base); c.rect(13, 40, 1, 9, darkWood.light)
+        for (top, half, height) in [(24.0, 12.0, 18.0), (13.0, 9.5, 15.0), (3.0, 6.5, 13.0)] {
+            for y in Int(top)..<Int(top + height) {
+                let t = (Double(y) - top) / height
+                let w = Int((half * (0.25 + 0.75 * t)).rounded())
+                for x in (15 - w)...(14 + w) {
+                    let side = Double(x - 15) / Double(max(1, w))
+                    let color = side < -0.45 ? needles.light : side > 0.4 ? needles.shade : needles.base
+                    c.plot(x, y, y == Int(top + height) - 1 ? needles.deep : color)
+                }
+            }
+        }
+        c.outline(strength: 0.55)
+        c.groundShadow(cx: 17, cy: 48.5, rx: 9, ry: 3)
+        return PixelPiece(canvas: c, origin: [15, 49])
+    }
+
+    /// One tile of white picket fence along i (the plane j), for the lot's front edge.
+    static func fence() -> PixelPiece {
+        var (c, iso) = canvas(w: 1, d: 0.1, height: 10)
+        let white = PixelRamp(0xFFFFFF, 0xF4EEE4, 0xD8CEC0, 0xA89C90)
+        for k in [3.0, 7.0] { c.faceJ(iso, i0: 0, i1: 1, j: 0.05, k0: k, k1: k + 1, white.shade) }
+        var u = 0.06
+        while u < 1 {
+            c.faceJ(iso, i0: u, i1: u + 0.1, j: 0.05, k0: 0, k1: 9, white.base)
+            c.faceJ(iso, i0: u, i1: u + 0.05, j: 0.05, k0: 8, k1: 10, white.light)
+            u += 1.0 / 3
+        }
+        c.outline(strength: 0.35)
+        return PixelPiece(canvas: c, origin: [iso.ox, iso.oy])
+    }
+
+    /// A slatted garden bench, seat along i.
+    static func bench() -> PixelPiece {
+        var (c, iso) = canvas(w: 1.4, d: 0.5, height: 14)
+        c.shadow(iso, i: 0.05, j: 0.05, w: 1.3, d: 0.42)
+        for leg in [0.12, 1.18] { c.box(iso, i: leg, j: 0.1, k: 0, w: 0.1, d: 0.32, h: 5, ramp: metal) }
+        c.box(iso, i: 0.05, j: 0.08, k: 5, w: 1.3, d: 0.36, h: 2, ramp: wood)
+        c.box(iso, i: 0.05, j: 0.02, k: 7, w: 1.3, d: 0.08, h: 6, ramp: wood)
+        c.outline(strength: 0.45)
+        return PixelPiece(canvas: c, origin: [iso.ox, iso.oy])
     }
 }
 
 /// The night look is a multiply over the whole world. Anything that should
 /// read as its true colour at night is drawn pre-divided by this.
 enum PixelWorkshopNight {
-    static let multiply = SIMD3<Double>(0.52, 0.56, 0.82)
+    static let multiply = SIMD3<Double>(0.44, 0.5, 0.78)
 }

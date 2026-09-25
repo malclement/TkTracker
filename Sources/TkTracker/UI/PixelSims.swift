@@ -385,13 +385,13 @@ enum PixelSims {
     }
 
     /// A warm pool of light, stepped rather than smooth.
-    static func glow(width w: Int, height h: Int, color: PixelColor) -> PixelCanvas {
+    static func glow(width w: Int, height h: Int, color: PixelColor, intensity: Double = 1) -> PixelCanvas {
         var c = PixelCanvas(width: w, height: h)
         let cx = Double(w) / 2, cy = Double(h) / 2
         for y in 0..<h {
             for x in 0..<w {
                 let d = sqrt(pow((Double(x) + 0.5 - cx) / cx, 2) + pow((Double(y) + 0.5 - cy) / cy, 2))
-                let alpha: UInt8 = d < 0.35 ? 64 : d < 0.65 ? 38 : d < 1 ? 16 : 0
+                let alpha = UInt8((Double(d < 0.35 ? 64 : d < 0.65 ? 38 : d < 1 ? 16 : 0) * intensity).rounded())
                 if alpha > 0 { c.plot(x, y, color.alpha(alpha)) }
             }
         }
