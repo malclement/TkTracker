@@ -22,6 +22,8 @@ enum Main {
 #if DEBUG
         case "--workshops-preview":
             WorkshopPreviewApp.main()
+        case "--workshops-snapshot":
+            exit(PixelWorkshopSnapshot.run(arguments: Array(args.dropFirst())))
 #endif
         case "--help", "-h", "help":
             print("""

@@ -1,4 +1,23 @@
 import SwiftUI
+import AppKit
+
+extension WorkshopState {
+    var tint: Color { Color(nsColor: ink) }
+    var ink: NSColor {
+        let pair: (UInt32, UInt32)
+        switch self {
+        case .working, .usingTool: pair = (0x167463, 0x77CBB4)
+        case .needsInput: pair = (0x92551D, 0xE4B166)
+        case .waitingForAgents: pair = (0x7560AD, 0xBBA7E4)
+        case .completed: pair = (0x377842, 0x8ACB92)
+        case .interrupted: pair = (0xA34C46, 0xE3A09A)
+        case .idle, .unavailable: return .secondaryLabelColor
+        }
+        return NSColor(name: nil) { appearance in
+            NSColor(hex: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? pair.1 : pair.0)
+        }
+    }
+}
 
 struct WorkshopView: View {
     @Environment(UsageStore.self) private var store
@@ -7,7 +26,7 @@ struct WorkshopView: View {
     @State private var selectedID: String?
     @State private var project = ""
     @State private var page = 0
-    @State private var zoom = 1.0
+    @State private var zoomStep = 0
     @State private var following = true
     @State private var cameraReset = 0
     @State private var demo = false
@@ -64,7 +83,7 @@ struct WorkshopView: View {
                 HStack(spacing: 12) {
                     if store.showsSourceScope && !demo { SourceScopePicker() }
                     Toggle("Demo", isOn: $demo).toggleStyle(.switch).controlSize(.small)
-                        .help("Explore sample islands and session lifecycle events")
+                        .help("Explore sample rooms and session lifecycle events")
                     Button { showingInfo.toggle() } label: { Image(systemName: "info.circle") }
                         .accessibilityLabel("About session activity")
                         .popover(isPresented: $showingInfo) { observationInfo }
@@ -80,7 +99,7 @@ struct WorkshopView: View {
             }
         }
         .onChange(of: demo) { _, _ in
-            selectedID = nil; project = ""; page = 0; zoom = 1; following = true; demoStep = 0; demoDate = Date()
+            selectedID = nil; project = ""; page = 0; zoomStep = 0; following = true; demoStep = 0; demoDate = Date()
         }
         .onChange(of: project) { _, _ in page = 0; selectedID = nil }
         .onChange(of: agents.map(\.id)) { _, ids in
@@ -94,7 +113,7 @@ struct WorkshopView: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Floating Workshops").font(.system(size: 23, weight: .semibold, design: .rounded))
+                Text("Workshops").font(.system(size: 23, weight: .semibold, design: .rounded))
                 Text("Your agents, at a glance.").font(.callout).foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
@@ -113,13 +132,13 @@ struct WorkshopView: View {
 
     private var scene: some View {
         ZStack {
-            WorkshopScene(islands: visibleIslands, selectedID: selected?.id, zoom: zoom, cameraReset: cameraReset,
+            PixelWorkshop(islands: visibleIslands, selectedID: selected?.id, zoomStep: zoomStep, cameraReset: cameraReset,
                 presentationID: following ? "follow/" + (selectedIsland?.id ?? "empty") : "overview/\(page)",
-                reducedMotion: reducedMotion, dark: colorScheme == .dark, onSelect: select)
+                reducedMotion: reducedMotion, dark: colorScheme == .dark, tokens: tokens, onSelect: select)
             if islands.isEmpty {
                 VStack(spacing: 12) {
-                    Image(systemName: "cloud").font(.system(size: 38, weight: .ultraLight)).foregroundStyle(.secondary)
-                    Text(store.workshops.hasLoaded || demo ? "Clear skies for now" : "Looking for your agents…")
+                    Image(systemName: "house").font(.system(size: 38, weight: .ultraLight)).foregroundStyle(.secondary)
+                    Text(store.workshops.hasLoaded || demo ? "The lot is quiet" : "Looking for your agents…")
                         .font(.title3.weight(.medium))
                     Text("Open a Claude Code or Codex session\nand its workshop will appear here.")
                         .multilineTextAlignment(.center).font(.callout).foregroundStyle(.secondary)
@@ -129,7 +148,7 @@ struct WorkshopView: View {
             VStack {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(following ? (selectedIsland?.lead.projectName ?? "Your sky") : "All islands")
+                        Text(following ? (selectedIsland?.lead.projectName ?? "Your lot") : "Whole lot")
                             .font(.system(size: 19, weight: .semibold, design: .rounded))
                         if following, let agent = selected {
                             Label(agent.state.label, systemImage: agent.state.symbol)
@@ -142,9 +161,9 @@ struct WorkshopView: View {
                     }
                     Spacer()
                     Button {
-                        following.toggle(); zoom = 1; cameraReset += 1
+                        following.toggle(); zoomStep = 0; cameraReset += 1
                     } label: {
-                        Label(following ? "All islands" : "Follow session", systemImage: following ? "square.grid.2x2" : "scope")
+                        Label(following ? "Whole lot" : "Follow session", systemImage: following ? "square.grid.2x2" : "scope")
                     }.controlSize(.small).disabled(islands.isEmpty)
                     if demo {
                         Button { demoStep += 1 } label: { Label("Next event", systemImage: "forward.end") }
@@ -152,21 +171,55 @@ struct WorkshopView: View {
                     }
                 }
                 Spacer()
-                HStack {
-                    if !islands.isEmpty {
-                        Text("Drag to look around").font(.caption).foregroundStyle(.secondary)
-                    }
+                HStack(alignment: .bottom) {
+                    if !islands.isEmpty { household }
                     Spacer(minLength: 8)
                     HStack(spacing: 10) {
-                        Button { zoom = max(0.7, zoom - 0.15) } label: { Image(systemName: "minus.magnifyingglass") }
-                            .accessibilityLabel("Zoom out").disabled(zoom <= 0.7)
-                        Button("Fit") { zoom = 1; cameraReset += 1 }.font(.caption)
-                        Button { zoom = min(1.65, zoom + 0.15) } label: { Image(systemName: "plus.magnifyingglass") }
-                            .accessibilityLabel("Zoom in").disabled(zoom >= 1.65)
+                        Button { zoomStep = max(-2, zoomStep - 1) } label: { Image(systemName: "minus.magnifyingglass") }
+                            .accessibilityLabel("Zoom out").disabled(zoomStep <= -2)
+                        Button("Fit") { zoomStep = 0; cameraReset += 1 }.font(.caption)
+                            .help("Fit the lot to the window. Drag the scene to pan.")
+                        Button { zoomStep = min(3, zoomStep + 1) } label: { Image(systemName: "plus.magnifyingglass") }
+                            .accessibilityLabel("Zoom in").disabled(zoomStep >= 3)
                     }.buttonStyle(.borderless).padding(9).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
                 }
             }.padding(16)
         }.clipped().frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Recorded tokens per agent, for the paper stacks on each desk.
+    private var tokens: [String: Int] {
+        let shown = visibleIslands.flatMap(\.agents)
+        if demo { return WorkshopDemo.tokens(for: shown) }
+        let byPath = Dictionary(store.allDigests.map { ($0.path, $0.totals.total) }, uniquingKeysWith: { a, _ in a })
+        var result: [String: Int] = [:]
+        for agent in shown { if let path = agent.digestPath, let total = byPath[path] { result[agent.id] = Int(total) } }
+        return result
+    }
+
+    /// The Sims household panel: everyone on screen, ringed in their state colour.
+    private var household: some View {
+        HStack(spacing: 7) {
+            ForEach(Array(visibleIslands.flatMap(\.agents).prefix(12))) { agent in
+                Button { select(agent.id) } label: {
+                    WorkshopPortrait(agent: agent, size: 34)
+                        .overlay(alignment: .topTrailing) {
+                            if agent.state == .needsInput {
+                                Image(systemName: "exclamationmark").font(.system(size: 8, weight: .black))
+                                    .foregroundStyle(.black).frame(width: 13, height: 13)
+                                    .background(Circle().fill(Color(nsColor: NSColor(hex: 0xFFB13B))))
+                                    .offset(x: 4, y: -4)
+                            }
+                        }
+                        .scaleEffect(agent.id == selected?.id ? 1.08 : 1)
+                }
+                .buttonStyle(.plain)
+                .help("\(agent.parentSessionID == nil ? agent.projectName : agent.title) · \(agent.state.label)")
+                .accessibilityLabel("\(agent.parentSessionID == nil ? agent.projectName : agent.title), \(agent.state.label)")
+            }
+        }
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11))
     }
 
     private var attentionStrip: some View {
@@ -194,9 +247,9 @@ struct WorkshopView: View {
             }
             Spacer()
             if pages > 1 && !following {
-                Button { page = max(0, page - 1) } label: { Image(systemName: "chevron.left") }.disabled(page == 0).accessibilityLabel("Previous islands")
+                Button { page = max(0, page - 1) } label: { Image(systemName: "chevron.left") }.disabled(page == 0).accessibilityLabel("Previous rooms")
                 Text("\(page + 1) / \(pages)").monospacedDigit()
-                Button { page = min(pages - 1, page + 1) } label: { Image(systemName: "chevron.right") }.disabled(page >= pages - 1).accessibilityLabel("Next islands")
+                Button { page = min(pages - 1, page + 1) } label: { Image(systemName: "chevron.right") }.disabled(page >= pages - 1).accessibilityLabel("Next rooms")
             } else {
                 Label("Local & private", systemImage: "lock")
             }
@@ -233,10 +286,8 @@ struct WorkshopView: View {
     private func rosterButton(_ agent: WorkshopAgent, isLead: Bool) -> some View {
         Button { select(agent.id) } label: {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: isLead ? "cube.fill" : "arrow.turn.down.right")
-                    .font(.system(size: isLead ? 17 : 12))
-                    .foregroundStyle(agent.state.tint)
-                    .frame(width: 22, height: 24)
+                WorkshopPortrait(agent: agent, size: isLead ? 28 : 22)
+                    .padding(.leading, isLead ? 0 : 6)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(isLead ? agent.projectName : agent.title)
                         .font(.system(size: 12, weight: .semibold)).lineLimit(1)
@@ -261,9 +312,12 @@ struct WorkshopView: View {
                     Spacer()
                     Image(systemName: agent.source == .codex ? "terminal" : "sparkle").foregroundStyle(.secondary)
                 }
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(agent.title).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                    Text(agent.projectName + " · " + agent.source.displayName).font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 12) {
+                    WorkshopPortrait(agent: agent, size: 54)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(agent.title).font(.headline).fixedSize(horizontal: false, vertical: true)
+                        Text(agent.projectName + " · " + agent.source.displayName).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Label(agent.state.label, systemImage: agent.state.symbol).font(.callout.weight(.medium)).foregroundStyle(agent.state.tint)
@@ -280,6 +334,19 @@ struct WorkshopView: View {
                     detailRow("Model", value: ModelIdentity.displayName(model))
                 }
                 detailRow("Session", value: String(agent.sessionID.prefix(8)))
+                if let island = selectedIsland, island.agents.count > 1 {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Team").font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            ForEach(island.agents) { member in
+                                Button { select(member.id) } label: { WorkshopPortrait(agent: member, size: 26) }
+                                    .buttonStyle(.plain)
+                                    .help("\(member.title) · \(member.state.label)")
+                                    .accessibilityLabel("\(member.title), \(member.state.label)")
+                            }
+                        }
+                    }
+                }
                 if let digest = store.allDigests.first(where: { $0.path == agent.digestPath }), !demo {
                     detailRow("Recorded tokens", value: Format.tokens(digest.totals.total))
                     Button("Session history…") { detail = digest }.controlSize(.small)
@@ -310,13 +377,13 @@ struct WorkshopView: View {
     private func select(_ id: String) {
         if let index = islands.firstIndex(where: { $0.agents.contains(where: { $0.id == id }) }) { page = index / 4 }
         selectedID = id
-        following = true; zoom = 1
+        following = true; zoomStep = 0
     }
     private var observationInfo: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("A workshop for each open session").font(.headline)
-            Text("Islands stay while sessions are loaded, even when agents are idle or a turn is complete. Closing a session removes its island after the next successful checks.")
-            Text("Codex may keep a session loaded after its tab closes. Its island leaves when Codex releases the session. Claude Code sessions are matched to their running process.")
+            Text("Rooms stay while sessions are loaded, even when agents are idle or a turn is complete. Closing a session removes its room after the next successful checks.")
+            Text("Codex may keep a session loaded after its tab closes. Its room empties when Codex releases the session. Claude Code sessions are matched to their running process.")
             Text("Activity comes from local session events. Missing or unreadable signals show an unavailable status. Waiting for you is shown only when an explicit input or approval request is observed.")
             Text("No prompts or tool output are copied into the workshop. Monitoring runs while this page is open.").foregroundStyle(.secondary)
         }.font(.callout).padding(20).frame(width: 355)
@@ -328,23 +395,23 @@ enum WorkshopDemo {
         switch step % 5 {
         case 1: return "A subagent needs your input."
         case 2: return "The test run finished. Its session stays open."
-        case 3: return "A session closed. Its island departs."
-        case 4: return "A new session opens and joins the sky."
-        default: return "Three sessions, each with a place of its own."
+        case 3: return "A session closed. Its team heads out."
+        case 4: return "A new session opens and moves in."
+        default: return "Three sessions, each with a room of its own."
         }
     }
     static func agents(step: Int, now: Date) -> [WorkshopAgent] {
         let stage = step % 5
-        func agent(_ id: String, project: String, title: String, state: WorkshopState, parent: String? = nil, source: UsageSource = .codex, order: Double = 0) -> WorkshopAgent {
+        func agent(_ id: String, project: String, title: String, state: WorkshopState, parent: String? = nil, source: UsageSource = .codex, order: Double = 0, tool: WorkshopToolKind = .edit) -> WorkshopAgent {
             WorkshopAgent(id: WorkshopAgent.key(profile: "demo", source: source, session: id), sessionID: id, profileID: "demo", source: source,
                 parentSessionID: parent, projectPath: "/Demo/" + project, title: title,
-                model: source == .codex ? "gpt-5.6-terra" : "claude-sonnet-5", state: state, activity: state == .needsInput ? "Choose which design to use" : state.label,
-                lastActivity: now, openedAt: now.addingTimeInterval(order), events: [WorkshopEvent(id: id, date: now, state: state, label: state.label)])
+                model: source == .codex ? "gpt-5.6-terra" : "claude-sonnet-5", state: state, activity: state == .needsInput ? "Choose which design to use" : state == .usingTool ? tool.label : state.label,
+                tool: state == .usingTool ? tool : nil, lastActivity: now, openedAt: now.addingTimeInterval(order), events: [WorkshopEvent(id: id, date: now, state: state, label: state.label)])
         }
         var result = [
-            agent("studio", project: "TkTracker", title: "Build the floating workshops", state: .working),
-            agent("design", project: "TkTracker", title: "Design the island scene", state: stage == 1 ? .needsInput : .usingTool, parent: "studio", order: 1),
-            agent("tests", project: "TkTracker", title: "Verify session lifecycle", state: stage >= 2 ? .completed : .usingTool, parent: "studio", order: 2),
+            agent("studio", project: "TkTracker", title: "Build the pixel workshops", state: .working),
+            agent("design", project: "TkTracker", title: "Design the room scene", state: stage == 1 ? .needsInput : .usingTool, parent: "studio", order: 1),
+            agent("tests", project: "TkTracker", title: "Verify session lifecycle", state: stage >= 2 ? .completed : .usingTool, parent: "studio", order: 2, tool: .run),
             agent("website", project: "Portfolio", title: "Polish the project gallery", state: .idle, source: .claude, order: 3),
         ]
         if stage != 3 {
@@ -352,6 +419,13 @@ enum WorkshopDemo {
             result.append(agent("review", project: "TrailForge", title: "Review the implementation", state: .working, parent: "api", order: 5))
         }
         if stage == 4 { result.append(agent("new", project: "Notebook", title: "Start a new idea", state: .working, source: .claude, order: 6)) }
+        return result
+    }
+    /// Sample recorded tokens, so demo desks carry paper stacks.
+    static func tokens(for agents: [WorkshopAgent]) -> [String: Int] {
+        let samples = ["studio": 3_400_000, "design": 420_000, "tests": 96_000, "website": 1_800_000, "api": 12_000_000, "review": 260_000, "new": 4_000]
+        var result: [String: Int] = [:]
+        for agent in agents { if let value = samples[agent.sessionID] { result[agent.id] = value } }
         return result
     }
 }

@@ -175,7 +175,7 @@ actor WorkshopMonitor {
             profileID: profile.id, source: profile.source, parentSessionID: reader?.parentSessionID ?? digest?.parentSessionId,
             projectPath: cwd, title: keepsTitles ? (digest?.title ?? "Session \(id.prefix(8))") : "Session \(id.prefix(8))",
             model: reader?.model ?? digest?.lastModel, digestPath: path, state: reader?.state ?? .unavailable,
-            activity: reader?.activity ?? "Waiting for activity details", lastActivity: reader?.date,
+            activity: reader?.activity ?? "Waiting for activity details", tool: reader?.tool, lastActivity: reader?.date,
             openedAt: openedAt, events: reader?.events ?? [])
     }
 
