@@ -1,6 +1,15 @@
 # Changelog
 
 
+## [2.2.0] - 2026-09-25
+
+Ad-hoc signed (not notarized): see the release notes to open it the first time.
+
+- Workshops hold up to 50 agents per project, up from 12. Anyone beyond 50 is counted on a "+N" plaque on the nameplate.
+- A building grows by desk rows as well as along the street, so a big team fills a near-square room instead of a long strip. Desks still never move as it grows.
+- Deep rooms get more couches along the side wall, so idle agents in big teams have somewhere to sit.
+- Doors line up on the sidewalk; a shallow building next to a deep one gets a back garden.
+
 ## [2.1.0] - 2026-09-25
 
 Ad-hoc signed (not notarized): see the release notes to open it the first time.

@@ -51,53 +51,73 @@ struct WorkshopFurniture: Equatable, Sendable {
     var depth: Double { Double(i) + Double(w) / 2 + Double(j) + Double(d) / 2 }
 }
 
-/// One building per project, shared by every session open on it. The room is
-/// a fixed-depth open office that grows along the street: a lounge at the
-/// street corner, then bays of two desks (one against the back wall, one in the
-/// middle row), then a walkway. Desk n always sits in the same place, so a
-/// room grows by adding bays at the far end and nobody's desk ever moves.
+/// One building per project, shared by every session open on it: an open
+/// office of desk rows, with a lounge at one end. Desks fill a growing square
+/// of rows (away from the back wall) and bays (along the street) in a fixed
+/// order, so desk n always stands in the same place and a room grows by
+/// adding a row or a bay, never by moving anyone.
 ///
 /// Axes: i runs from the back wall (0) toward the street; j runs along the
 /// street from the lounge end. The walls at i = 0 and j = 0 are drawn; the
 /// street side and the far end are cut away.
 struct WorkshopRoomTemplate: Sendable {
-    /// Depth from the back wall to the street side, in tiles.
-    static let width = 7
+    /// Tiles per desk row: the desk, its chair, and the aisle behind.
+    static let rowPitch = 3
     static let loungeLength = 3
     static let bayLength = 2
-    static let maxBays = 6
-    static let maxDesks = maxBays * 2
-    static let door = WorkshopTile(i: 6, j: 2)
-    /// Just outside the doorway, where arrivals appear and departures fade.
-    static let outside: SIMD2<Double> = [7.4, 2.5]
+    /// Deep enough for the lounge (the couch runs from i = 3 to 6).
+    static let minDepth = 7
+    static let maxDesks = 50
 
-    /// Desks shown (one per displayed member), and the bays that hold them.
+    /// Desks shown (one per displayed member), and the grid that holds them.
     let deskCount: Int
+    let rows: Int
     let bays: Int
 
     init(deskCount: Int) {
         self.deskCount = min(Self.maxDesks, max(1, deskCount))
-        bays = (self.deskCount + 1) / 2
+        let cells = (0..<self.deskCount).map(Self.cell)
+        rows = (cells.map(\.row).max() ?? 0) + 1
+        bays = (cells.map(\.bay).max() ?? 0) + 1
     }
 
-    /// The room's length along the street.
-    var length: Int { Self.length(bays: bays) }
-    static func length(bays: Int) -> Int { loungeLength + bays * bayLength + 1 }
+    /// Where desk n sits in the grid. Square shells: shell s adds row s across
+    /// the existing bays, then bay s down every row, so the first n desks
+    /// always fill a near-square.
+    static func cell(_ n: Int) -> (row: Int, bay: Int) {
+        let s = Int(Double(n).squareRoot())
+        let k = n - s * s
+        return k < s ? (s, k) : (k - s, s)
+    }
 
-    /// Desk n: bay n / 2, back-wall row for even n and middle row for odd n.
+    /// From the back wall to the street side.
+    var depth: Int { max(Self.minDepth, rows * Self.rowPitch + 1) }
+    /// Along the street: lounge, bays, and a walkway at the far end.
+    var length: Int { Self.loungeLength + bays * Self.bayLength + 1 }
+    /// On the street side, in the lounge.
+    var door: WorkshopTile { WorkshopTile(i: depth - 1, j: 2) }
+    /// Just outside the doorway, where arrivals appear and departures fade.
+    var outside: SIMD2<Double> { [Double(depth) + 0.4, 2.5] }
+
     /// Every desk is two tiles long and faces the street (+i).
     static func desk(_ n: Int) -> (i: Int, j: Int, w: Int, d: Int) {
-        (n % 2 == 0 ? 0 : 3, loungeLength + (n / 2) * bayLength, 1, bayLength)
+        let cell = cell(n)
+        return (cell.row * rowPitch, loungeLength + cell.bay * bayLength, 1, bayLength)
     }
+
+    /// Couches along the side wall, each three tiles long and facing into the
+    /// room: the lounge's, then one more every four tiles in a deep room, so a
+    /// big team has somewhere to rest. The last tiles by the door stay clear.
+    var couches: [Int] { [3] + Array(stride(from: 8, through: depth - 5, by: 4)) }
 
     var furniture: [WorkshopFurniture] {
         var items = [
             WorkshopFurniture(kind: .plant, i: 0, j: 0, w: 1, d: 1),
             WorkshopFurniture(kind: .coffee, i: 1, j: 0, w: 1, d: 1),
-            WorkshopFurniture(kind: .couch, i: 3, j: 0, w: 3, d: 1),
             WorkshopFurniture(kind: .plant, i: 6, j: 0, w: 1, d: 1),
             WorkshopFurniture(kind: .bookshelf, i: 0, j: length - 1, w: 1, d: 1),
         ]
+        items += couches.map { WorkshopFurniture(kind: .couch, i: $0, j: 0, w: 3, d: 1) }
         for n in 0..<deskCount {
             let desk = Self.desk(n)
             items.append(WorkshopFurniture(kind: .desk(n), i: desk.i, j: desk.j, w: desk.w, d: desk.d))
@@ -121,9 +141,11 @@ struct WorkshopRoomTemplate: Sendable {
                                facing: .northWest, pose: .wait)
     }
 
-    /// Needing you: at the open far end of the room, facing out.
+    /// Needing you: at the open far end of the room, near the street, facing out.
     var frontSpots: [WorkshopStation] {
-        [4, 5, 6, 2].map { i in WorkshopStation(tile: .init(i: i, j: length - 1), point: [Double(i) + 0.5, Double(length) - 0.5], facing: .southWest, pose: .wave) }
+        [depth - 3, depth - 2, depth - 1, depth - 4].map { i in
+            WorkshopStation(tile: .init(i: i, j: length - 1), point: [Double(i) + 0.5, Double(length) - 0.5], facing: .southWest, pose: .wave)
+        }
     }
 
     /// The whiteboard hangs on the back wall in the lounge.
@@ -132,12 +154,14 @@ struct WorkshopRoomTemplate: Sendable {
         WorkshopStation(tile: .init(i: 1, j: 1), point: [1.5, 1.4], facing: .northEast, pose: .stand),
         WorkshopStation(tile: .init(i: 2, j: 1), point: [2.5, 1.6], facing: .northEast, pose: .stand),
     ]
-    /// Seats on the couch, which stands against the side wall facing into the room.
-    static let couchSpots = [
-        WorkshopStation(tile: .init(i: 4, j: 1), point: [4.5, 0.45], facing: .southWest, pose: .sit),
-        WorkshopStation(tile: .init(i: 3, j: 1), point: [3.6, 0.45], facing: .southWest, pose: .sit),
-        WorkshopStation(tile: .init(i: 5, j: 1), point: [5.4, 0.45], facing: .southWest, pose: .sit),
-    ]
+    /// Seats on the couches, middle seat first on each.
+    var couchSpots: [WorkshopStation] {
+        couches.flatMap { i0 in
+            [(1, 1.5), (0, 0.6), (2, 2.4)].map { di, x in
+                WorkshopStation(tile: .init(i: i0 + di, j: 1), point: [Double(i0) + x, 0.45], facing: .southWest, pose: .sit)
+            }
+        }
+    }
 }
 
 /// Desks are handed out like parking spaces: whoever has one keeps it, and a
@@ -167,7 +191,7 @@ enum WorkshopStationPlanner {
         var front = template.frontSpots[...]
         var coffee = WorkshopRoomTemplate.coffeeSpots[...]
         let idle = members.filter { $0.state == .idle }
-        var couch = WorkshopRoomTemplate.couchSpots[...]
+        var couch = template.couchSpots[...]
         var watched = Set<String>()
         var whiteboardTaken = false
         func team(_ agent: WorkshopAgent) -> String { teams[agent.id] ?? agent.parentID ?? agent.id }
@@ -218,7 +242,7 @@ enum WorkshopStationPlanner {
 /// step, so a Sim can never get stuck out of sight.
 enum WorkshopPathfinder {
     static func path(from start: WorkshopTile, to goal: WorkshopTile, blocked: Set<WorkshopTile>,
-                     width: Int = WorkshopRoomTemplate.width, height: Int = WorkshopRoomTemplate.length(bays: WorkshopRoomTemplate.maxBays)) -> [WorkshopTile] {
+                     width: Int, height: Int) -> [WorkshopTile] {
         guard start != goal else { return [goal] }
         func inside(_ t: WorkshopTile) -> Bool { t.i >= 0 && t.j >= 0 && t.i < width && t.j < height }
         guard inside(goal), !blocked.contains(goal) else { return [start, goal] }
@@ -253,8 +277,8 @@ enum WorkshopPathfinder {
 }
 
 /// Buildings stand in a row along the street, one per project, in the order
-/// their projects first opened. A building that grows pushes its neighbours
-/// further down the street.
+/// their projects first opened, each with its door on the sidewalk. A building
+/// that grows pushes its neighbours further down the street.
 enum WorkshopLotPlan {
     static let maxBuildings = 6
     /// Lawn between neighbouring buildings.
@@ -262,12 +286,14 @@ enum WorkshopLotPlan {
     static let fullWall = 40
     static let lowWall = 16
 
-    /// Each building's origin, given the room lengths in street order.
-    static func origins(lengths: [Int]) -> [WorkshopTile] {
+    /// Each building's origin, given (depth, length) in street order. Fronts
+    /// line up on the street; a shallower building has lawn behind it.
+    static func origins(sizes: [(depth: Int, length: Int)]) -> [WorkshopTile] {
+        let deepest = sizes.map(\.depth).max() ?? 0
         var j = 0
-        return lengths.map { length in
-            defer { j += length + gap }
-            return WorkshopTile(i: 0, j: j)
+        return sizes.map { size in
+            defer { j += size.length + gap }
+            return WorkshopTile(i: deepest - size.depth, j: j)
         }
     }
 
@@ -278,9 +304,9 @@ enum WorkshopLotPlan {
     }
 
     /// Tile bounds of the buildings: (minimum, maximum exclusive).
-    static func bounds(lengths: [Int]) -> (WorkshopTile, WorkshopTile) {
-        let total = max(1, lengths.reduce(0, +) + max(0, lengths.count - 1) * gap)
-        return (.init(i: 0, j: 0), .init(i: WorkshopRoomTemplate.width, j: total))
+    static func bounds(sizes: [(depth: Int, length: Int)]) -> (WorkshopTile, WorkshopTile) {
+        let total = max(1, sizes.map(\.length).reduce(0, +) + max(0, sizes.count - 1) * gap)
+        return (.init(i: 0, j: 0), .init(i: sizes.map(\.depth).max() ?? WorkshopRoomTemplate.minDepth, j: total))
     }
 }
 

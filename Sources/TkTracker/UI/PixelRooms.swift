@@ -160,8 +160,8 @@ enum PixelRooms {
     // MARK: Room
 
     /// Floor, rug and back walls. Everything in the room stands in front of this.
-    static func shell(decor: WorkshopDecor, length: Int, backRight: Int, backLeft: Int) -> PixelPiece {
-        let W = Double(WorkshopRoomTemplate.width), D = Double(length)
+    static func shell(decor: WorkshopDecor, depth: Int, length: Int, backRight: Int, backLeft: Int) -> PixelPiece {
+        let W = Double(depth), D = Double(length)
         let ox = D * 16 + 6, oy = Double(WorkshopLotPlan.fullWall) + 6
         var c = PixelCanvas(width: Int(ox + W * 16 + 8), height: Int(oy + (W + D) * 8 + 4))
         let iso = Iso(ox: ox, oy: oy)
@@ -185,7 +185,7 @@ enum PixelRooms {
             }
         } else {
             // Square tiles with a fine grout line.
-            for i in 0..<Int(W) {
+            for i in 0..<depth {
                 for j in 0..<length {
                     let a = (i + j) % 2 == 0 ? floor.0 : floor.0.mixed(with: floor.1, 0.6)
                     c.flat(iso, i: Double(i), j: Double(j), w: 1, d: 1, floor.2)
@@ -313,7 +313,7 @@ enum PixelRooms {
     /// along j at `streetI` (sidewalk, two lanes, sidewalk). `rooms` are the
     /// occupied room origins, which cast a shadow on the grass.
     static func ground(field: (WorkshopTile, WorkshopTile), lawn: (WorkshopTile, WorkshopTile), streetI: Int,
-                       paths: Set<WorkshopTile>, rooms: [(origin: WorkshopTile, length: Int)], beds: [WorkshopTile], seed: UInt64) -> PixelPiece {
+                       paths: Set<WorkshopTile>, rooms: [(origin: WorkshopTile, depth: Int, length: Int)], beds: [WorkshopTile], seed: UInt64) -> PixelPiece {
         let (lower, upper) = field
         let W = Double(upper.i - lower.i), D = Double(upper.j - lower.j)
         let ox = D * 16 + 2, oy = 2.0
@@ -370,9 +370,8 @@ enum PixelRooms {
             if !flower { c.plot(Int(p.x) + 1, Int(p.y) - 1, meadow.light) }
         }
         // Rooms cast a short shadow down and to the right of their footprint.
-        let rw = Double(WorkshopRoomTemplate.width)
-        for (room, length) in rooms {
-            let rd = Double(length)
+        for (room, depth, length) in rooms {
+            let rw = Double(depth), rd = Double(length)
             let x = Double(room.i - lower.i), y = Double(room.j - lower.j)
             let (dx, dy) = (0.42, 0.3)
             c.poly([iso.p(x + rw, y + dy), iso.p(x + rw + dx, y + dy), iso.p(x + rw + dx, y + rd + dy),
