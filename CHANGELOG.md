@@ -1,6 +1,16 @@
 # Changelog
 
 
+## [2.3.0] - 2026-09-25
+
+Ad-hoc signed (not notarized): see the release notes to open it the first time.
+
+- Overview leads with spend: the API value takes half the headline row, with the change against the previous period (or yesterday by this hour) as a badge beside it. The separate cache hit rate tile is gone; the Prompt cache card shows the same figure with its savings.
+- The spend chart now comes straight after the headline. Accounts, quotas and budgets move below the model breakdown.
+- Accounts & quotas and Monthly budgets match the rest of the dashboard: accounts sit side by side, quota and budget bars turn amber, orange then red as they fill, and old quota readings carry a "stale" badge.
+- The pricing coverage note is a banner, amber only when totals are partial.
+- Chart polish: date labels are grey instead of blue, y-axis ticks read "$0 / $50 / $100", an empty range says so, and $0 models no longer appear in the model share list.
+
 ## [2.2.0] - 2026-09-25
 
 Ad-hoc signed (not notarized): see the release notes to open it the first time.
