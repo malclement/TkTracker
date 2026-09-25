@@ -3,7 +3,7 @@ enum BundledPricing {
     static let json = #"""
 {
   "schema": 2,
-  "updated": "2026-09-07",
+  "updated": "2026-09-25",
   "note": "USD per million tokens. Exact canonical IDs and explicit cache rates. Unknown service tiers use standard estimates; unsupported observed fast modes remain unpriced.",
   "webSearchPer1000": 10,
   "contextWindows": [],
@@ -20,6 +20,38 @@ enum BundledPricing {
       "cacheRead": 1.0,
       "cacheWrite5m": 12.5,
       "cacheWrite1h": 12.5,
+      "contextWindow": 1050000,
+      "sourceURL": "https://developers.openai.com/api/docs/pricing",
+      "longContextThreshold": 272000,
+      "fastMultiplier": 2
+    },
+    {
+      "match": [],
+      "ids": [
+        "gpt-6-sol"
+      ],
+      "vendor": "openai",
+      "input": 2,
+      "output": 10,
+      "cacheRead": 0.2,
+      "cacheWrite5m": 2.5,
+      "cacheWrite1h": 2.5,
+      "contextWindow": 1050000,
+      "sourceURL": "https://developers.openai.com/api/docs/pricing",
+      "longContextThreshold": 272000,
+      "fastMultiplier": 2
+    },
+    {
+      "match": [],
+      "ids": [
+        "gpt-6-luna"
+      ],
+      "vendor": "openai",
+      "input": 0.1,
+      "output": 0.5,
+      "cacheRead": 0.01,
+      "cacheWrite5m": 0.125,
+      "cacheWrite1h": 0.125,
       "contextWindow": 1050000,
       "sourceURL": "https://developers.openai.com/api/docs/pricing",
       "longContextThreshold": 272000,
@@ -107,6 +139,35 @@ enum BundledPricing {
     {
       "match": [],
       "ids": [
+        "gpt-5.5-pro"
+      ],
+      "vendor": "openai",
+      "input": 30,
+      "output": 180,
+      "cacheRead": 30,
+      "cacheWrite5m": 0,
+      "cacheWrite1h": 0,
+      "contextWindow": 1050000,
+      "sourceURL": "https://developers.openai.com/api/docs/pricing",
+      "longContextThreshold": 272000
+    },
+    {
+      "match": [],
+      "ids": [
+        "gpt-5.5-cyber"
+      ],
+      "vendor": "openai",
+      "input": 12.5,
+      "output": 75,
+      "cacheRead": 1.25,
+      "cacheWrite5m": 0,
+      "cacheWrite1h": 0,
+      "contextWindow": 272000,
+      "sourceURL": "https://developers.openai.com/api/docs/pricing"
+    },
+    {
+      "match": [],
+      "ids": [
         "gpt-5.4"
       ],
       "vendor": "openai",
@@ -151,6 +212,21 @@ enum BundledPricing {
     {
       "match": [],
       "ids": [
+        "gpt-5.4-pro"
+      ],
+      "vendor": "openai",
+      "input": 30,
+      "output": 180,
+      "cacheRead": 30,
+      "cacheWrite5m": 0,
+      "cacheWrite1h": 0,
+      "contextWindow": 1050000,
+      "sourceURL": "https://developers.openai.com/api/docs/pricing",
+      "longContextThreshold": 272000
+    },
+    {
+      "match": [],
+      "ids": [
         "gpt-5.3",
         "gpt-5.3-codex"
       ],
@@ -173,6 +249,20 @@ enum BundledPricing {
       "input": 1.75,
       "output": 14,
       "cacheRead": 0.175,
+      "cacheWrite5m": 0,
+      "cacheWrite1h": 0,
+      "contextWindow": 272000,
+      "sourceURL": "https://developers.openai.com/api/docs/pricing"
+    },
+    {
+      "match": [],
+      "ids": [
+        "gpt-5.2-pro"
+      ],
+      "vendor": "openai",
+      "input": 21,
+      "output": 168,
+      "cacheRead": 21,
       "cacheWrite5m": 0,
       "cacheWrite1h": 0,
       "contextWindow": 272000,
@@ -228,6 +318,20 @@ enum BundledPricing {
     {
       "match": [],
       "ids": [
+        "gpt-5-pro"
+      ],
+      "vendor": "openai",
+      "input": 15,
+      "output": 120,
+      "cacheRead": 15,
+      "cacheWrite5m": 0,
+      "cacheWrite1h": 0,
+      "contextWindow": 272000,
+      "sourceURL": "https://developers.openai.com/api/docs/pricing"
+    },
+    {
+      "match": [],
+      "ids": [
         "codex-mini-latest"
       ],
       "vendor": "openai",
@@ -268,6 +372,21 @@ enum BundledPricing {
       "cacheWrite1h": 20,
       "contextWindow": 1000000,
       "sourceURL": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "match": [],
+      "ids": [
+        "claude-opus-5-5"
+      ],
+      "vendor": "anthropic",
+      "input": 4,
+      "output": 20,
+      "cacheRead": 0.2,
+      "cacheWrite5m": 5,
+      "cacheWrite1h": 8,
+      "contextWindow": 1000000,
+      "sourceURL": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fastMultiplier": 2
     },
     {
       "match": [],

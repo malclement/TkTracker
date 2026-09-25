@@ -29,7 +29,7 @@ struct ProductionTests {
         #expect(ModelIdentity.displayName("gpt-5.1-codex-max") != ModelIdentity.displayName("gpt-5.1-codex"))
         #expect(ModelIdentity.displayName("claude-mythos-5-1") == "Mythos 5.1")
     }
-    @Test func newRatesAndExceptions() {
+    @Test func newRatesAndExceptions() throws {
         let c = PricingCatalog(document: .init(schema: 2, webSearchPer1000: 0, contextWindows: [], defaultContextWindow: 1, rules: []), overrides: [:])
         #expect(c.pricing(for: "gpt-5.6-sol") == nil)
         let catalog = PricingCatalog(document: PricingCatalog.builtIn, overrides: [:])
@@ -39,7 +39,16 @@ struct ProductionTests {
         #expect(catalog.pricing(for: "gpt-5.6-luna")?.output == 1.2)
         #expect(catalog.pricing(for: "claude-sonnet-5")?.input == 2)
         #expect(catalog.pricing(for: "claude-fable-5-1")?.cacheRead == 0.25)
+        let opus55 = try #require(catalog.pricing(for: "claude-opus-5-5[1m]"))
+        #expect(opus55.input == 4); #expect(opus55.output == 20); #expect(opus55.cacheRead == 0.2)
+        #expect(opus55.cacheWrite5m == 5); #expect(opus55.cacheWrite1h == 8)
+        #expect(catalog.pricing(for: "claude-opus-5-5", context: PricingContext(tier: .fast))?.output == 40)
         #expect(catalog.pricing(for: "codex-mini-latest")?.cacheRead == 0.375)
+        #expect(catalog.pricing(for: "gpt-6-sol")?.cacheWrite5m == 2.5)
+        #expect(catalog.pricing(for: "gpt-6-luna", context: PricingContext(tier: .fast))?.output == 1)
+        #expect(catalog.pricing(for: "gpt-5.5-pro", context: PricingContext(promptTokens: 272_001))?.output == 270)
+        #expect(catalog.pricing(for: "gpt-5.4-pro")?.cacheRead == 30)
+        #expect(catalog.pricing(for: "gpt-5.5-pro", context: PricingContext(tier: .fast)) == nil)
         #expect(catalog.pricing(for: "gpt-5.6-unknown") == nil)
     }
     @Test func longPromptThresholdAndFastCompose() throws {
