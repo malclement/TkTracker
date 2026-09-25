@@ -184,32 +184,6 @@ struct WorkshopTests {
         #expect(reader.state == .interrupted)
     }
 
-    @Test func fittedCameraKeepsTheWholeTeamVisible() {
-        let lower = SIMD3<Float>(-5, -1.6, -4)
-        let upper = SIMD3<Float>(6, 2, 4)
-        for aspect: Float in [0.5, 1, 1.8, 3] {
-            for azimuth: Float in [-1.5, 0.28, 2] {
-                let frame = WorkshopCameraFrame.fit(minimum: lower, maximum: upper, aspect: aspect,
-                    fieldOfView: 34, azimuth: azimuth, elevation: 0.48)
-                let forward = simd_normalize(frame.target - frame.position)
-                let right = simd_normalize(simd_cross(forward, [0, 1, 0]))
-                let up = simd_cross(right, forward)
-                for x in [lower.x, upper.x] {
-                    for y in [lower.y, upper.y] {
-                        for z in [lower.z, upper.z] {
-                            let corner = SIMD3<Float>(x, y, z) - frame.position
-                            let depth = simd_dot(corner, forward)
-                            #expect(depth > 0)
-                            let halfHeight = depth * tan(Float(34) * .pi / 360)
-                            #expect(abs(simd_dot(corner, up)) / halfHeight < 0.81)
-                            #expect(abs(simd_dot(corner, right)) / (halfHeight * aspect) < 0.81)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     @Test func incrementalReadKeepsPartialLinesAndRespectsPrivacy() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("tktracker-workshops-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

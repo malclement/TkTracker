@@ -32,6 +32,33 @@ enum WorkshopState: String, Sendable, CaseIterable {
     var isWorking: Bool { self == .working || self == .usingTool }
 }
 
+/// Which kind of tool an agent is using, sorted from the tool name only. The
+/// arguments are never read, so this is as private as the state itself.
+enum WorkshopToolKind: String, Sendable, CaseIterable {
+    case search, read, edit, run, delegate, other
+
+    init(toolName: String) {
+        let name = toolName.lowercased()
+        if name.contains("spawn_agent") || name == "agent" || name == "task" { self = .delegate }
+        else if name.contains("patch") || name == "edit" || name == "write" || name == "multiedit" || name == "notebookedit" { self = .edit }
+        else if name.contains("search") || name.contains("web") || name == "grep" || name == "glob" { self = .search }
+        else if name == "read" || name.contains("read_file") { self = .read }
+        else if name.contains("exec") || name == "bash" || name.contains("terminal") || name.contains("shell") { self = .run }
+        else { self = .other }
+    }
+
+    var label: String {
+        switch self {
+        case .search: return "Searching"
+        case .read: return "Reading files"
+        case .edit: return "Editing files"
+        case .run: return "Running a tool"
+        case .delegate: return "Delegating to a subagent"
+        case .other: return "Using a tool"
+        }
+    }
+}
+
 struct WorkshopEvent: Identifiable, Equatable, Sendable {
     var id: String
     var date: Date
@@ -51,6 +78,8 @@ struct WorkshopAgent: Identifiable, Equatable, Sendable {
     var digestPath: String?
     var state: WorkshopState
     var activity: String
+    /// Set only while `state == .usingTool`.
+    var tool: WorkshopToolKind? = nil
     var lastActivity: Date?
     var openedAt: Date
     var presenceConfirmed: Bool = true
@@ -123,6 +152,7 @@ struct WorkshopPresenceReducer: Sendable {
 struct WorkshopActivityReader: Sendable {
     private(set) var state: WorkshopState = .unavailable
     private(set) var activity = "No activity observed yet"
+    private(set) var tool: WorkshopToolKind?
     private(set) var date: Date?
     private(set) var parentSessionID: String?
     private(set) var sessionID: String?
@@ -233,19 +263,14 @@ struct WorkshopActivityReader: Sendable {
         } else if name.contains("wait_agent") || name == "wait" {
             transition(.waitingForAgents, "Waiting for delegated work", at: timestamp)
         } else {
-            let label: String
-            if name.contains("spawn_agent") || name == "agent" || name == "task" { label = "Delegating to a subagent" }
-            else if name.contains("patch") || name == "edit" || name == "write" { label = "Editing files" }
-            else if name.contains("search") || name.contains("web") || name == "grep" || name == "glob" { label = "Searching" }
-            else if name == "read" || name.contains("read_file") { label = "Reading files" }
-            else if name.contains("exec") || name == "bash" || name.contains("terminal") { label = "Running a tool" }
-            else { label = "Using a tool" }
-            transition(.usingTool, label, at: timestamp)
+            let kind = WorkshopToolKind(toolName: tool.name)
+            transition(.usingTool, kind.label, at: timestamp)
+            self.tool = kind
         }
     }
     private mutating func transition(_ next: WorkshopState, _ label: String, at timestamp: Date?) {
         let changed = next != state || activity != label
-        state = next; activity = label
+        state = next; activity = label; tool = nil
         if let timestamp { date = timestamp }
         if changed, let timestamp {
             sequence += 1
