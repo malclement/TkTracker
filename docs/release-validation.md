@@ -1,7 +1,15 @@
 # Release validation
 
-Release candidate: 2.0.0 RC2 (build 8), including Floating Workshops. Production
+Release candidate: 2.0.0 after RC2 (build 8), with Workshops redrawn as a
+pixel-art lot on SpriteKit (the RC2 3D islands are replaced). Production
 publication requires every gate below.
+
+Pixel Workshops validation (September 25): all 175 local tests pass, including
+room layout, stations, paths and paper stacks. The scene was checked through
+`--workshops-snapshot` offscreen renders (day, night, each room, walking and
+arrival transitions) and runs in the isolated preview at about 5% CPU. Live-window
+clicking, panning and zoom were not exercised: the validating session had no
+screen-recording or accessibility access.
 
 RC2 validation: all 166 local tests pass, including UTC process identity,
 transcript discovery before a usage scan and Claude session closure. The corrected

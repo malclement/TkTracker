@@ -3,6 +3,7 @@
 
 ## 2.0.0 — release candidate
 
+- Unreleased: redraw Workshops as a pixel-art lot on a street, replacing the floating islands. Each session is a room; agents are Sims with a plumbob and thought bubble, and walk to a station for their state (desk, coffee machine, couch, or the front of the room when they need you). Desks carry a paper stack that grows with recorded tokens. Dark mode is night, lit by streetlamps, and by desk lamps only while agents work. SpriteKit replaces RealityKit; free orbit becomes drag-to-pan with pixel-exact zoom steps.
 - RC2 (build 8): fix Claude session detection outside UTC and transcript discovery for project paths containing punctuation or Unicode.
 - Add Floating Workshops: a native 3D page with a workshop for each loaded session, animated agent avatars and attached subagent platforms.
 - Add focused and overview modes, a persistent session/team list, drag-to-orbit, automatic camera framing, project/provider filters and an explicit Needs you state.

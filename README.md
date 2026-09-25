@@ -39,10 +39,11 @@ counts and API-equivalent value by account, project, branch, session and model.
 
 The menu bar, popover and dashboard also provide live activity, cache savings,
 model charts, a weekday/hour heatmap, sortable tables and session resume commands.
-The **Workshops** page shows loaded sessions as native 3D floating islands, with
-animated robots, attached subagent platforms, project filters, agent details and
-a **Needs you** strip. Islands leave when session closure is observed; idle and
-completed turns keep their islands. A labeled demo lets you explore the scene.
+The **Workshops** page shows loaded sessions as a pixel-art lot in a small
+neighbourhood: one room per session, where the lead and its subagents walk between desk,
+coffee machine and couch as their state changes. It has project filters, agent
+details and a **Needs you** strip. Rooms empty when session closure is observed;
+idle and completed turns keep their rooms. A labeled demo lets you explore the scene.
 See [workshop activity and lifecycle](docs/workshops.md) for detection limits,
 including Codex's delay between closing a tab and unloading its session.
 Scanning is incremental. Exact token records remain archived after transcript
