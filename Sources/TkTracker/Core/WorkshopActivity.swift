@@ -122,6 +122,29 @@ struct WorkshopIsland: Identifiable, Equatable {
     }
 }
 
+/// Every open session on one project, sharing one workshop building. Sessions
+/// keep the order they opened in, and the project the order of its first one.
+struct WorkshopProject: Identifiable, Equatable {
+    var sessions: [WorkshopIsland]
+    var id: String { path }
+    var path: String { sessions[0].lead.projectPath }
+    var name: String { sessions[0].lead.projectName }
+    var lead: WorkshopAgent { sessions[0].lead }
+    var agents: [WorkshopAgent] { sessions.flatMap(\.agents) }
+    var subagentCount: Int { sessions.reduce(0) { $0 + $1.subagents.count } }
+
+    static func group(_ islands: [WorkshopIsland]) -> [WorkshopProject] {
+        var order: [String] = []
+        var byPath: [String: [WorkshopIsland]] = [:]
+        for island in islands {
+            let path = island.lead.projectPath
+            if byPath[path] == nil { order.append(path) }
+            byPath[path, default: []].append(island)
+        }
+        return order.map { WorkshopProject(sessions: byPath[$0]!) }
+    }
+}
+
 /// Absence only closes a session after two successful observations. Failed
 /// probes preserve islands as unavailable; elapsed inactivity never closes one.
 struct WorkshopPresenceReducer: Sendable {

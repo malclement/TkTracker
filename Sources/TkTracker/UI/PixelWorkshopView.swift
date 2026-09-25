@@ -6,7 +6,7 @@ import QuartzCore
 
 /// SpriteKit in a native view. Navigation and details stay in SwiftUI.
 struct PixelWorkshop: NSViewRepresentable {
-    var islands: [WorkshopIsland]
+    var projects: [WorkshopProject]
     var selectedID: String?
     var zoomStep: Int
     var cameraReset: Int
@@ -19,7 +19,7 @@ struct PixelWorkshop: NSViewRepresentable {
     func makeNSView(context: Context) -> PixelWorkshopView { PixelWorkshopView() }
     func updateNSView(_ view: PixelWorkshopView, context: Context) {
         view.workshop.onSelect = onSelect
-        view.apply(PixelWorkshopScene.Model(islands: islands, selectedID: selectedID, dark: dark, reducedMotion: reducedMotion,
+        view.apply(PixelWorkshopScene.Model(projects: projects, selectedID: selectedID, dark: dark, reducedMotion: reducedMotion,
                                             tokens: tokens, presentationID: presentationID, zoomStep: zoomStep, cameraReset: cameraReset))
     }
     static func dismantleNSView(_ view: PixelWorkshopView, coordinator: ()) { view.stop() }
@@ -122,7 +122,7 @@ struct WorkshopPortrait: View {
 #if DEBUG
 /// Renders the scene offscreen with Metal, for checking the art without a
 /// window or screen-recording permission:
-///   swift run TkTracker --workshops-snapshot out.png [--light] [--follow] [--step N] [--width W --height H] [--zoom STEP] [--from N]
+///   swift run TkTracker --workshops-snapshot out.png [--light] [--follow] [--island N] [--step N] [--width W --height H] [--zoom STEP] [--from N] [--crowd N]
 enum PixelWorkshopSnapshot {
     static func run(arguments: [String]) -> Int32 {
         guard let path = arguments.first else {
@@ -137,22 +137,32 @@ enum PixelWorkshopSnapshot {
         let scale = CGFloat(value("--scale") ?? 2)
         let seconds = value("--time") ?? 1.0
         return MainActor.assumeIsolated {
-            let agents = WorkshopDemo.agents(step: step, now: Date())
-            var islands = WorkshopIsland.group(agents)
-            if follow {
-                let index = min(islands.count - 1, Int(value("--island") ?? 0))
-                islands = [islands[index]]
+            var agents = WorkshopDemo.agents(step: step, now: Date())
+            // --crowd N: give the TrailForge lead N more subagents, to check large teams.
+            if let crowd = value("--crowd"), let lead = agents.first(where: { $0.sessionID == "api" }) {
+                for n in 0..<Int(crowd) {
+                    var extra = lead
+                    extra.id = WorkshopAgent.key(profile: "demo", source: lead.source, session: "crowd-\(n)")
+                    extra.sessionID = "crowd-\(n)"; extra.parentSessionID = "api"; extra.title = "Helper \(n + 1)"
+                    extra.state = [.working, .usingTool, .completed, .idle][n % 4]
+                    agents.append(extra)
+                }
             }
-            let model = PixelWorkshopScene.Model(islands: islands, selectedID: islands.first?.lead.id, dark: dark, reducedMotion: false,
+            var projects = WorkshopProject.group(WorkshopIsland.group(agents))
+            if follow {
+                let index = min(projects.count - 1, Int(value("--island") ?? 0))
+                projects = [projects[index]]
+            }
+            let model = PixelWorkshopScene.Model(projects: projects, selectedID: projects.first?.lead.id, dark: dark, reducedMotion: false,
                                                  tokens: WorkshopDemo.tokens(for: agents), presentationID: follow ? "follow" : "overview",
                                                  zoomStep: Int(value("--zoom") ?? 0))
             // --from N: settle on step N first, then animate into --step, like a live update.
             var previous: PixelWorkshopScene.Model?
             if let from = value("--from") {
                 let earlier = WorkshopDemo.agents(step: Int(from), now: Date())
-                var before = WorkshopIsland.group(earlier)
-                if follow { before = before.filter { $0.id == islands.first?.id } }
-                previous = PixelWorkshopScene.Model(islands: before, selectedID: model.selectedID, dark: dark, reducedMotion: false,
+                var before = WorkshopProject.group(WorkshopIsland.group(earlier))
+                if follow { before = before.filter { $0.id == projects.first?.id } }
+                previous = PixelWorkshopScene.Model(projects: before, selectedID: model.selectedID, dark: dark, reducedMotion: false,
                                                     tokens: WorkshopDemo.tokens(for: earlier), presentationID: model.presentationID, zoomStep: model.zoomStep)
             }
             guard let image = render(model: model, previous: previous, size: size, scale: scale, seconds: seconds) else { print("render failed"); return 1 }
