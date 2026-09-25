@@ -161,8 +161,8 @@ final class PixelWorkshopScene: SKScene {
             created.insert(project.id)
         }
         for project in projects { rooms[project.id]?.prepare(project: project) }
-        let lengths = projects.map { rooms[$0.id]!.template.length }
-        let origins = WorkshopLotPlan.origins(lengths: lengths)
+        let sizes = projects.map { (depth: rooms[$0.id]!.template.depth, length: rooms[$0.id]!.template.length) }
+        let origins = WorkshopLotPlan.origins(sizes: sizes)
         for (index, project) in projects.enumerated() {
             guard let room = rooms[project.id] else { continue }
             let isNew = created.contains(project.id)
@@ -170,7 +170,7 @@ final class PixelWorkshopScene: SKScene {
             room.update(project: project, walls: WorkshopLotPlan.wallHeights(index: index), model: next, clock: clock, animate: animateChanges)
             if isNew && animateChanges { room.arrive() }
         }
-        updateGround(lengths: lengths, origins: origins)
+        updateGround(sizes: sizes, origins: origins)
         updateSelection()
         fitCamera()
         tick(delta: 0)
@@ -179,28 +179,29 @@ final class PixelWorkshopScene: SKScene {
     /// Beyond the drawn field the view shows this same grass, so edges never show.
     static let grass = NSColor(hex: 0x88BF6A)
 
-    private func updateGround(lengths: [Int], origins: [WorkshopTile]) {
-        let (lower, upper) = WorkshopLotPlan.bounds(lengths: lengths)
+    private func updateGround(sizes: [(depth: Int, length: Int)], origins: [WorkshopTile]) {
+        let (lower, upper) = WorkshopLotPlan.bounds(sizes: sizes)
         let lawnLower = WorkshopTile(i: lower.i - 1, j: lower.j - 1), lawnUpper = WorkshopTile(i: upper.i + 1, j: upper.j + 1)
         let street = lawnUpper.i
         // The street runs well past the view in both directions, so its ends never show.
         let field = (WorkshopTile(i: lawnLower.i - 14, j: lawnLower.j - 30), WorkshopTile(i: street + 16, j: lawnUpper.j + 30))
         // A short path from each door to the sidewalk.
         var paths = Set<WorkshopTile>()
-        for origin in origins {
-            for i in (origin.i + WorkshopRoomTemplate.width)..<street { paths.insert(WorkshopTile(i: i, j: origin.j + WorkshopRoomTemplate.door.j)) }
+        let doorJ = 2
+        for (origin, size) in zip(origins, sizes) {
+            for i in (origin.i + size.depth)..<street { paths.insert(WorkshopTile(i: i, j: origin.j + doorJ)) }
         }
         // A bush on the lawn between neighbouring buildings, near the street. Nothing
         // tall, and nothing further back, where the next side wall would hide it.
         let beds: [WorkshopTile] = []
         var gardenPieces: [(key: String, spot: SIMD2<Double>)] = []
-        for (origin, length) in zip(origins, lengths).dropLast() {
-            let gapJ = origin.j + length
-            gardenPieces.append(("bush|\(gapJ % 2)", [6.2, Double(gapJ) + 1.1]))
+        for (origin, size) in zip(origins, sizes).dropLast() {
+            let gapJ = origin.j + size.length
+            gardenPieces.append(("bush|\(gapJ % 2)", [Double(upper.i) - 0.8, Double(gapJ) + 1.1]))
         }
-        let rooms = origins.map { ($0, lengths[origins.firstIndex(of: $0)!]) }
+        let rooms = zip(origins, sizes).map { (origin: $0, depth: $1.depth, length: $1.length) }
         builtLength = upper.j
-        let key = "ground|\(field.0.i),\(field.0.j),\(field.1.i),\(field.1.j)|\(lengths)"
+        let key = "ground|\(field.0.i),\(field.0.j),\(field.1.i),\(field.1.j)|\(sizes.map { "\($0.depth)x\($0.length)" })"
         guard key != groundKey else { return }
         groundKey = key
         lawn = (lawnLower, lawnUpper)
@@ -213,12 +214,12 @@ final class PixelWorkshopScene: SKScene {
         for node in scenery { node.removeFromParent() }
         for node in lampGlows { node.removeFromParent() }
         scenery.removeAll(); lampGlows.removeAll()
-        func add(_ key: String, at spot: SIMD2<Double>, _ make: () -> PixelPiece) {
+        func add(_ key: String, at spot: SIMD2<Double>, behindWalls: Bool = false, _ make: () -> PixelPiece) {
             let node = SKSpriteNode()
             node.show(PixelTextures.shared.piece(key, make))
             node.position = scenePoint(spot.x, spot.y)
             // Anything behind the lot sits under the room shells, so back walls hide it.
-            let behind = spot.x < Double(lower.i) || spot.y < Double(lower.j)
+            let behind = behindWalls || spot.x < Double(lower.i) || spot.y < Double(lower.j)
             node.zPosition = behind ? Layer.shell - 500 + CGFloat(spot.x + spot.y) : CGFloat(spot.x + spot.y) * 10
             world.addChild(node)
             scenery.append(node)
@@ -242,6 +243,18 @@ final class PixelWorkshopScene: SKScene {
             add("fence", at: [Double(i), Double(lawnUpper.j) - 0.1]) { PixelRooms.fence() }
         }
         for garden in gardenPieces { add(garden.key, at: garden.spot) { piece(garden.key) } }
+        // A shallow building next to a deep one has a back garden: a few trees,
+        // drawn under the walls since they stand behind the building.
+        for (origin, size) in zip(origins, sizes) where origin.i >= 4 {
+            var j = Double(origin.j) + 1.2
+            while j < Double(origin.j + size.length) - 0.5 {
+                let h = workshopHash("yard-\(origin.j)-\(Int(j * 10))")
+                let i = 0.8 + Double(h % 100) / 100 * Double(origin.i - 3)
+                let name = "tree|\((h >> 8) % 3)"
+                add(name, at: [i, j], behindWalls: true) { piece(name) }
+                j += 2.6
+            }
+        }
         // Trees round the neighbourhood on a jittered grid, so they never pile up.
         let spacing = 2.6
         var gi = Double(field.0.i) + 1
@@ -277,7 +290,7 @@ final class PixelWorkshopScene: SKScene {
         }
         // A mailbox by each path, on the side away from the nameplate.
         for origin in origins {
-            add("mailbox", at: [Double(street) - 0.3, Double(origin.j + WorkshopRoomTemplate.door.j) - 0.3]) { PixelRooms.mailbox() }
+            add("mailbox", at: [Double(street) - 0.3, Double(origin.j + doorJ) - 0.3]) { PixelRooms.mailbox() }
         }
     }
 
@@ -406,7 +419,7 @@ final class PixelWorkshopScene: SKScene {
         let tile = lotIso.tile(at: [Double(point.x), Double(-point.y)])
         for (id, room) in rooms {
             let o = room.origin
-            if tile.x >= Double(o.i), tile.y >= Double(o.j), tile.x < Double(o.i + WorkshopRoomTemplate.width), tile.y < Double(o.j + room.template.length) {
+            if tile.x >= Double(o.i), tile.y >= Double(o.j), tile.x < Double(o.i + room.template.depth), tile.y < Double(o.j + room.template.length) {
                 return model.projects.first { $0.id == id }?.lead.id
             }
         }
@@ -430,7 +443,7 @@ private final class RoomNode: SKNode {
     private var deskKeys: [Int: String] = [:]
     private var glows: [String: SKSpriteNode] = [:]
     private var stubs: [SKSpriteNode] = []
-    private var stubLength = 0
+    private var stubSize = (depth: 0, length: 0)
     private let mat = SKSpriteNode()
     private let sign = SKSpriteNode()
     private let overflowNode = SKSpriteNode()
@@ -524,20 +537,19 @@ private final class RoomNode: SKNode {
 
     /// Front walls, cut down to a stub: along the far end, and along the street side except the door.
     private func layoutStubs() {
-        let length = template.length
-        if length != stubLength {
+        let (depth, length, doorJ) = (template.depth, template.length, template.door.j)
+        if depth != stubSize.depth || length != stubSize.length {
             for stub in stubs { stub.removeFromParent() }
-            stubs.removeAll()
-            stubLength = length
-            stubs = (0..<WorkshopRoomTemplate.width).map { _ in makeStub(alongI: true) }
-                + (0..<length).filter { $0 != WorkshopRoomTemplate.door.j }.map { _ in makeStub(alongI: false) }
+            stubSize = (depth, length)
+            stubs = (0..<depth).map { _ in makeStub(alongI: true) }
+                + (0..<length).filter { $0 != doorJ }.map { _ in makeStub(alongI: false) }
         }
         var index = 0
-        for n in 0..<WorkshopRoomTemplate.width {
+        for n in 0..<depth {
             place(stubs[index], alongI: true, i: Double(n), j: Double(length)); index += 1
         }
-        for n in 0..<length where n != WorkshopRoomTemplate.door.j {
-            place(stubs[index], alongI: false, i: Double(WorkshopRoomTemplate.width), j: Double(n)); index += 1
+        for n in 0..<length where n != doorJ {
+            place(stubs[index], alongI: false, i: Double(depth), j: Double(n)); index += 1
         }
     }
     private func makeStub(alongI: Bool) -> SKSpriteNode {
@@ -553,22 +565,28 @@ private final class RoomNode: SKNode {
 
     func update(project: WorkshopProject, walls: (backRight: Int, backLeft: Int), model: PixelWorkshopScene.Model, clock: Double, animate: Bool) {
         dark = model.dark
-        let length = template.length
+        let (deep, length) = (template.depth, template.length)
         let decor = WorkshopDecor(projectPath: project.path, source: project.lead.source)
         shell.zPosition = Layer.shell + CGFloat(origin.i + origin.j)
         shell.position = point(0, 0)
-        let key = "shell|\(decor.wallpaper).\(decor.floor).\(decor.rug)|\(length)|\(walls.backRight).\(walls.backLeft)"
+        let key = "shell|\(decor.wallpaper).\(decor.floor).\(decor.rug)|\(deep)x\(length)|\(walls.backRight).\(walls.backLeft)"
         if key != shellKey {
             shellKey = key
-            shell.show(PixelTextures.shared.piece(key) { PixelRooms.shell(decor: decor, length: length, backRight: walls.backRight, backLeft: walls.backLeft) })
+            shell.show(PixelTextures.shared.piece(key) { PixelRooms.shell(decor: decor, depth: deep, length: length, backRight: walls.backRight, backLeft: walls.backLeft) })
         }
         layoutStubs()
-        mat.position = point(Double(WorkshopRoomTemplate.width) + 0.25, Double(WorkshopRoomTemplate.door.j))
+        mat.position = point(Double(deep) + 0.25, Double(template.door.j))
 
         // Fixed furniture: the lounge at the street corner, a bookshelf at the far end.
         place("plant", i: 0, j: 0, depthAt: [0.5, 0.5]) { PixelRooms.plant() }
         place("coffee", i: 1, j: 0, depthAt: [1.5, 0.5]) { PixelRooms.coffee() }
-        place("couch|\(decor.couch)", i: 3, j: 0, depthAt: [4.5, 0.5], name: "couch") { PixelRooms.couch(decor.couch) }
+        for (n, i0) in template.couches.enumerated() {
+            place("couch|\(decor.couch)", i: i0, j: 0, depthAt: [Double(i0) + 1.5, 0.5], name: "couch\(n)") { PixelRooms.couch(decor.couch) }
+        }
+        for n in template.couches.count..<WorkshopRoomTemplate.maxDesks {
+            guard let extra = furniture.removeValue(forKey: "couch\(n)") else { break }
+            extra.removeFromParent()
+        }
         place("plant", i: 6, j: 0, depthAt: [6.5, 0.5], name: "plant2") { PixelRooms.plant() }
         place("bookshelf", i: 0, j: length - 1, depthAt: [0.3, Double(length) - 0.5]) { PixelRooms.bookshelf() }
 
@@ -644,11 +662,11 @@ private final class RoomNode: SKNode {
             screenGlow.isHidden = !(dark && working)
         }
 
-        roomLight.show(PixelTextures.shared.piece("glow-room|\(length)") {
-            let w = (WorkshopRoomTemplate.width + length) * 14
+        roomLight.show(PixelTextures.shared.piece("glow-room|\(deep + length)") {
+            let w = (deep + length) * 12
             return PixelPiece(canvas: PixelSims.glow(width: w, height: w / 2, color: PixelColor(0xFFC070), intensity: 0.85), origin: [Double(w / 2), Double(w / 4)])
         })
-        roomLight.position = point(Double(WorkshopRoomTemplate.width) / 2, Double(length) / 2, 6)
+        roomLight.position = point(Double(deep) / 2, Double(length) / 2, 6)
         roomLight.isHidden = !(dark && members.contains { $0.state.isWorking || $0.state == .needsInput || $0.state == .waitingForAgents })
 
         // Signage, beside the door where the path from the street arrives.
@@ -656,8 +674,8 @@ private final class RoomNode: SKNode {
             signText = project.name
             sign.show(PixelTextures.shared.piece("sign|\(PixelFont.sanitized(project.name))") { PixelRooms.nameplate(project.name) })
         }
-        sign.position = point(Double(WorkshopRoomTemplate.width) + 0.55, Double(WorkshopRoomTemplate.door.j) + 1.9)
-        sign.zPosition = depth(Double(WorkshopRoomTemplate.width) + 0.55, Double(WorkshopRoomTemplate.door.j) + 1.9) + 9
+        sign.position = point(Double(deep) + 0.55, Double(template.door.j) + 1.9)
+        sign.zPosition = depth(Double(deep) + 0.55, Double(template.door.j) + 1.9) + 9
         overflowNode.isHidden = hiddenCount <= 0
         if hiddenCount > 0 {
             overflowNode.show(PixelTextures.shared.piece("overflow|\(hiddenCount)") { PixelRooms.overflow(hiddenCount) })
@@ -697,7 +715,11 @@ private final class RoomNode: SKNode {
         node.zPosition = depth(center.x, center.y)
     }
 
-    var couchDepth: CGFloat { depth(4.5, 0.5) }
+    /// Painter's depth for someone seated at `i` on a couch: just in front of that couch.
+    func couchDepth(at i: Double) -> CGFloat {
+        let i0 = template.couches.last { Double($0) <= i + 0.5 } ?? template.couches[0]
+        return depth(Double(i0) + 1.5, 0.5)
+    }
 
     func tick(clock: Double, delta: Double, reduced: Bool) {
         for sim in sims.values { sim.tick(clock: clock, delta: delta, reduced: reduced, selected: sim.agentID == selectedID) }
@@ -729,7 +751,7 @@ private final class SimNode: SKNode {
     private let effects = SKNode()
     private var agent: WorkshopAgent
     private var station: WorkshopStation
-    private var local: SIMD2<Double> = WorkshopRoomTemplate.outside
+    private var local: SIMD2<Double> = [0, 0]
     private var waypoints: [SIMD2<Double>] = []
     private var facing: WorkshopFacing = .southWest
     private var celebrateUntil: Double?
@@ -745,7 +767,8 @@ private final class SimNode: SKNode {
         self.room = room
         self.agent = agent
         look = WorkshopLook(agentID: agent.id)
-        station = WorkshopStation(tile: WorkshopRoomTemplate.door, point: WorkshopRoomTemplate.door.center, facing: .southWest, pose: .stand)
+        station = WorkshopStation(tile: room.template.door, point: room.template.door.center, facing: .southWest, pose: .stand)
+        local = room.template.outside
         seed = Double(workshopHash(agent.id) % 1000) / 1000
         super.init()
         name = "agent:" + agent.id
@@ -765,10 +788,10 @@ private final class SimNode: SKNode {
         self.agent = agent
         self.station = station
         if animate {
-            local = WorkshopRoomTemplate.outside
+            local = template.outside
             alpha = 0
             run(.fadeIn(withDuration: 0.35))
-            walk(from: WorkshopRoomTemplate.door, template: template, prefix: [WorkshopRoomTemplate.door.center])
+            walk(from: template.door, template: template, prefix: [template.door.center])
         } else {
             local = station.point
             facing = station.facing
@@ -800,13 +823,13 @@ private final class SimNode: SKNode {
         leavingAt = clock
         celebrateUntil = nil
         pendingWalk = nil
-        let route = WorkshopPathfinder.path(from: tile, to: WorkshopRoomTemplate.door, blocked: template.blocked, height: template.length)
-        waypoints = route.dropFirst().map(\.center) + [WorkshopRoomTemplate.outside]
+        let route = WorkshopPathfinder.path(from: tile, to: template.door, blocked: template.blocked, width: template.depth, height: template.length)
+        waypoints = route.dropFirst().map(\.center) + [template.outside]
         plumbob.isHidden = true; bubble.isHidden = true; effects.removeAllChildren()
     }
 
     private func walk(from start: WorkshopTile, template: WorkshopRoomTemplate, prefix: [SIMD2<Double>] = []) {
-        let route = WorkshopPathfinder.path(from: start, to: station.tile, blocked: template.blocked, height: template.length)
+        let route = WorkshopPathfinder.path(from: start, to: station.tile, blocked: template.blocked, width: template.depth, height: template.length)
         waypoints = prefix + route.dropFirst().map(\.center) + [station.point]
     }
 
@@ -843,7 +866,7 @@ private final class SimNode: SKNode {
         let pose = self.pose
         position = room.point(local.x, local.y)
         let seated = waypoints.isEmpty && (pose == .sit || pose == .sleep)
-        zPosition = seated ? room.couchDepth + 7 : room.depth(local.x, local.y) + 5
+        zPosition = seated ? room.couchDepth(at: local.x) + 7 : room.depth(local.x, local.y) + 5
         let fps: Double
         switch pose {
         case .walk: fps = 6
