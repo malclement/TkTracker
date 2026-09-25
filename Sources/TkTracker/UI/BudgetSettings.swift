@@ -34,17 +34,38 @@ struct BudgetsCard: View {
     @Environment(UsageStore.self) private var store
     var body: some View {
         if !store.budgetProgress.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Monthly budgets").font(.headline)
+            VStack(alignment: .leading, spacing: 12) {
+                Eyebrow(text: "Monthly budgets", icon: "gauge.with.needle")
                 ForEach(store.budgetProgress) { progress in
-                    VStack(alignment: .leading) {
-                        HStack { Text(progress.rule.name); Spacer(); Text("\(Format.money(progress.used)) / \(Format.money(progress.rule.monthlyLimit))").monospacedDigit() }
-                        ProgressView(value: min(progress.fraction, 1))
-                            .tint(progress.fraction >= 1 ? .orange : Theme.accent)
-                        if let projection = progress.projected { Text("Month-end at current daily pace: \(Format.money(projection))").font(.caption).foregroundStyle(.secondary) }
+                    let tint = progress.fraction >= 1
+                        ? Theme.critical
+                        : Theme.fillColor(progress.fraction, calm: Theme.accent)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(progress.rule.name).font(.subheadline.weight(.medium))
+                            Spacer(minLength: 8)
+                            Text("\(Format.money(progress.used)) of \(Format.money(progress.rule.monthlyLimit))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Text(Format.percent(progress.fraction))
+                                .font(.caption.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(tint)
+                                .frame(minWidth: 34, alignment: .trailing)
+                        }
+                        ShareBar(fraction: progress.fraction, color: tint, height: 6)
+                        if let projection = progress.projected {
+                            Text("Month-end at current daily pace: \(Format.money(projection))")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(progress.rule.name)
+                    .accessibilityValue("\(Format.money(progress.used)) of \(Format.money(progress.rule.monthlyLimit))")
                 }
-            }.card()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
         }
     }
 }
