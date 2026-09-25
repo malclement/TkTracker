@@ -1,6 +1,14 @@
 # Changelog
 
 
+## [2.0.1] - 2026-09-25
+
+Ad-hoc signed (not notarized): see the release notes to open it the first time.
+
+- Price Claude Opus 5.5 ($4 / $20 per MTok, $0.20 cache reads, 2× fast mode). Its usage previously counted as unpriced.
+- Price GPT-6 Sol, GPT-6 Luna, GPT-5.5 Pro, GPT-5.5 Cyber, GPT-5.4 Pro, GPT-5.2 Pro and GPT-5 Pro, including long-context and fast-mode rates where OpenAI offers them.
+- `codex-auto-review` stays unpriced: OpenAI publishes no rate for it.
+
 ## [2.0.0] - 2026-09-25
 
 Ad-hoc signed (not notarized): see the release notes to open it the first time.
