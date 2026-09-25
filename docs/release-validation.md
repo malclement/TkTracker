@@ -1,6 +1,11 @@
 # Release validation
 
-Release candidate: 2.0.0 after RC2 (build 8), with Workshops redrawn as a
+Released: 2.0.0 (build 9), published ad-hoc signed by the owner's decision
+(September 25): no Developer ID or notarization secrets exist, and the release
+workflow now builds an ad-hoc universal app when they are absent. Gates 4–7 below
+still apply to any future notarized release.
+
+Contents: 2.0.0 after RC2 (build 8), with Workshops redrawn as a
 pixel-art lot on SpriteKit (the RC2 3D islands are replaced). Production
 publication requires every gate below.
 
