@@ -1,6 +1,15 @@
 # Changelog
 
 
+## [2.0.2] - 2026-09-25
+
+Ad-hoc signed (not notarized): see the release notes to open it the first time.
+
+- Workshops: redraw the ground around the lot. The meadow is softer, the lot has mowed stripes and a picket fence, the paths are continuous gravel, and rooms, trees, lamps and bushes cast shadows. The street extends past the view. Empty slots on the lot become low gardens that no longer hide the room behind them.
+- Workshops at night: the night is deeper and the streetlamps warmer. A room's ceiling light is on only while someone in it is working, needs you or is waiting on agents.
+- Workshops page: the scene title sits on a panel so it stays legible over the lawn. The info popover explains the plumbob colours, the footer counts agents that need you, and the inspector no longer repeats the state as the activity.
+- Fix the K in room nameplates, which read as an R.
+
 ## [2.0.1] - 2026-09-25
 
 Ad-hoc signed (not notarized): see the release notes to open it the first time.
