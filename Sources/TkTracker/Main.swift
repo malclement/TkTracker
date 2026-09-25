@@ -24,6 +24,8 @@ enum Main {
             WorkshopPreviewApp.main()
         case "--workshops-snapshot":
             exit(PixelWorkshopSnapshot.run(arguments: Array(args.dropFirst())))
+        case "--overview-snapshot":
+            exit(OverviewSnapshot.run(arguments: Array(args.dropFirst())))
 #endif
         case "--help", "-h", "help":
             print("""
