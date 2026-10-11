@@ -16,6 +16,7 @@ import Foundation
 /// mid-session). The rare usage seen before any turn context is held back and
 /// attributed to the first model the file declares — or left unpriced if the file never names one.
 enum CodexParser {
+    static let revision = 3
     private static let usageNeedle = Data("\"token_count\"".utf8)
     private static let metaNeedle = Data("\"session_meta\"".utf8)
     private static let turnNeedle = Data("\"turn_context\"".utf8)
@@ -31,7 +32,7 @@ enum CodexParser {
         mtime: Double
     ) -> FileDigest {
         var digest: FileDigest
-        if let prev = previous, size >= prev.offset, prev.parserRevision == 2 {
+        if let prev = previous, size >= prev.offset, [2, revision].contains(prev.parserRevision ?? 0) {
             digest = prev
         } else {
             // New file, or truncated/rewritten below our offset: parse from scratch.
@@ -39,13 +40,22 @@ enum CodexParser {
         }
         digest.source = .codex
         digest.missing = false
-        digest.parserRevision = 2
+        digest.parserRevision = revision
         if digest.records == nil { digest.records = [] }
 
         guard let handle = try? FileHandle(forReadingFrom: url) else { return previous ?? digest }
         defer { try? handle.close() }
 
         var state = ScanState(digest: digest)
+        if previous?.parserRevision == 2, digest.offset > 0 {
+            // Repair cached identity from the file's own header, retaining all
+            // accounting records and the committed offset without replaying usage.
+            if let header = try? handle.read(upToCount: 1024 * 1024), let newline = header.firstIndex(of: 10) {
+                state.hasSessionMetadata = false
+                processLine(Data(header[..<newline]), state: &state)
+            }
+            state.hasSessionMetadata = true
+        }
         JSONLChunker.forEachLine(
             handle: handle,
             from: digest.offset,
@@ -89,6 +99,7 @@ enum CodexParser {
 
     private struct ScanState {
         var digest: FileDigest
+        var hasSessionMetadata: Bool
         var buckets: [HourModelKey: TokenTotals]
         var currentModel: String?
         /// Usage seen before the file names a model, keyed by hour.
@@ -97,6 +108,7 @@ enum CodexParser {
 
         init(digest: FileDigest) {
             self.digest = digest
+            hasSessionMetadata = digest.offset > 0
             var b: [HourModelKey: TokenTotals] = [:]
             for bucket in digest.buckets {
                 b[HourModelKey(hour: bucket.hour, model: bucket.model)] = bucket.totals
@@ -190,7 +202,9 @@ enum CodexParser {
 
         switch raw.type {
         case "session_meta":
-            state.digest.parentSessionId = payload.source?.parentThreadId
+            guard !state.hasSessionMetadata else { return }
+            state.hasSessionMetadata = true
+            state.digest.parentSessionId = payload.parent_thread_id ?? payload.source?.parentThreadId
             if let id = payload.id, !id.isEmpty { state.digest.sessionId = id }
             if let cwd = payload.cwd, !cwd.isEmpty {
                 state.digest.cwd = cwd
@@ -286,6 +300,7 @@ private struct RawCodexLine: Decodable {
 private struct RawCodexPayload: Decodable {
     // session_meta
     let id: String?
+    let parent_thread_id: String?
     let cwd: String?
     let git: RawCodexGit?
     // turn_context
@@ -354,9 +369,11 @@ private struct RawCodexOrigin: Decodable {
             struct Subagent: Decodable {
                 struct Spawn: Decodable { var parent_thread_id: String? }
                 var spawn: Spawn?
+                var thread_spawn: Spawn?
             }
             var subagent: Subagent?
         }
-        parentThreadId = (try? Origin(from: decoder))?.subagent?.spawn?.parent_thread_id
+        let subagent = (try? Origin(from: decoder))?.subagent
+        parentThreadId = subagent?.thread_spawn?.parent_thread_id ?? subagent?.spawn?.parent_thread_id
     }
 }

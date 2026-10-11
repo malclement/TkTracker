@@ -79,6 +79,27 @@ final class CodexTests {
 
     // MARK: parsing
 
+    @Test func subagentHeaderSurvivesInheritedParentMetadataAndCacheMigration() throws {
+        for origin in ["spawn", "thread_spawn"] {
+            let child = #"{"type":"session_meta","payload":{"id":"child","parent_thread_id":"root","cwd":"/project","source":{"subagent":{"\#(origin)":{"parent_thread_id":"root"}}}}}"#
+            let url = try write([child, meta(id: "root"), turnContext(model: "gpt-5.5"), tokenCount(input: 100, output: 10)])
+            let digest = try scan(url)
+            #expect(digest.sessionId == "child")
+            #expect(digest.parentSessionId == "root")
+            var old = digest
+            old.parserRevision = 2; old.sessionId = "root"; old.parentSessionId = nil
+            let repaired = try scan(url, previous: old)
+            #expect(repaired.sessionId == "child")
+            #expect(repaired.parentSessionId == "root")
+            #expect(repaired.totals == old.totals)
+            #expect(repaired.records == old.records)
+            #expect(repaired.offset == old.offset)
+            let nestedOnly = child.replacingOccurrences(of: #""parent_thread_id":"root","cwd""#, with: #""cwd""#)
+            let nestedDigest = try scan(write([nestedOnly]))
+            #expect(nestedDigest.parentSessionId == "root")
+        }
+    }
+
     @Test func basicParseSplitsCachedInput() throws {
         let url = try write([
             meta(),

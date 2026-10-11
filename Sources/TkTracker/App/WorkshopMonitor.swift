@@ -119,6 +119,28 @@ actor WorkshopMonitor {
                     observed.append(makeAgent(id: id, profile: profile, digest: digest, reader: activity,
                         path: path, cwd: digest?.cwd ?? activity?.cwd ?? "", openedAt: first, keepsTitles: keepsTitles))
                 }
+                // Codex may release a subagent's rollout writer after a turn.
+                // Keep transcript-backed descendants with their loaded parent,
+                // just as Claude teams do, including nested and completed agents.
+                var parents = Set(observed.filter { $0.profileID == profile.id && $0.source == .codex }.map(\.sessionID))
+                let children = digests.filter {
+                    $0.source == .codex && ($0.profileId ?? "codex") == profile.id && !$0.missing && $0.parentSessionId != nil
+                        && ScanCore.canonicalPath(URL(fileURLWithPath: $0.path)).hasPrefix(root + "/")
+                }
+                var added = true
+                while added {
+                    added = false
+                    for child in children where !parents.contains(child.sessionId) && child.parentSessionId.map({ parents.contains($0) }) == true {
+                        parents.insert(child.sessionId); added = true
+                        usedPaths.insert(child.path)
+                        let activity = read(path: child.path, source: .codex)
+                        let key = WorkshopAgent.key(profile: profile.id, source: .codex, session: child.sessionId)
+                        let first = opened[key] ?? Date(timeIntervalSince1970: child.firstTs ?? now.timeIntervalSince1970)
+                        opened[key] = first
+                        observed.append(makeAgent(id: child.sessionId, profile: profile, digest: child, reader: activity,
+                            path: child.path, cwd: child.cwd ?? activity?.cwd ?? "", openedAt: first, keepsTitles: keepsTitles))
+                    }
+                }
             } else {
                 let metadataRoot = profile.root.deletingLastPathComponent().appendingPathComponent("sessions")
                 guard let files = try? FileManager.default.contentsOfDirectory(at: metadataRoot, includingPropertiesForKeys: nil) else {

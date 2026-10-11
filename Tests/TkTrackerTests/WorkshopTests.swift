@@ -88,6 +88,38 @@ struct WorkshopTests {
         var legacy = WorkshopActivityReader()
         legacy.consume(try row("session_meta", ["id": "child", "source": ["subagent": ["spawn": ["parent_thread_id": "root"]]]]), source: .codex)
         #expect(legacy.parentSessionID == "root")
+        var spawned = WorkshopActivityReader()
+        spawned.consume(try row("session_meta", ["id": "child", "source": ["subagent": ["thread_spawn": ["parent_thread_id": "root"]]]]), source: .codex)
+        spawned.consume(try row("session_meta", ["id": "root", "cwd": "/inherited"]), source: .codex)
+        #expect(spawned.sessionID == "child")
+        #expect(spawned.parentSessionID == "root")
+    }
+
+    @Test func codexTeamStaysWithLoadedParentWithoutChildWriters() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tktracker-codex-team-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var digests: [FileDigest] = []
+        for (id, parent) in [("lead", nil), ("child", "lead"), ("nested", "child"), ("other", "absent"), ("foreign", "lead")] as [(String, String?)] {
+            let file = root.appendingPathComponent("\(id).jsonl")
+            var metadata: [String: Any] = ["id": id, "cwd": "/project"]
+            if let parent { metadata["parent_thread_id"] = parent }
+            var data = try row("session_meta", metadata); data.append(10)
+            data.append(try row("event_msg", ["type": "task_complete"])); data.append(10)
+            try data.write(to: file)
+            digests.append(FileDigest(path: ScanCore.canonicalPath(file), source: .codex, sessionId: id, projectDir: "project",
+                parentSessionId: parent, profileId: id == "foreign" ? "other-account" : "test"))
+        }
+        let profile = SourceProfile(id: "test", name: "Test", source: .codex, rootPath: root.path)
+        let lead = digests.first!.path
+        let monitor = WorkshopMonitor(processProbe: { .init(codexTranscripts: FileManager.default.fileExists(atPath: lead) ? [lead] : []) })
+        let snapshot = await monitor.snapshot(profiles: [profile], digests: digests, keepsTitles: false)
+        #expect(Set(snapshot.agents.map(\.sessionID)) == ["lead", "child", "nested"])
+        #expect(WorkshopIsland.group(snapshot.agents).first?.subagents.count == 2)
+        #expect(snapshot.agents.allSatisfy { $0.state == .completed })
+        try FileManager.default.removeItem(atPath: lead)
+        #expect(await monitor.snapshot(profiles: [profile], digests: digests, keepsTitles: false).agents.count == 3)
+        #expect(await monitor.snapshot(profiles: [profile], digests: digests, keepsTitles: false).agents.isEmpty)
     }
 
     @Test func waitingForAToolIsDistinctFromWaitingForAgents() throws {

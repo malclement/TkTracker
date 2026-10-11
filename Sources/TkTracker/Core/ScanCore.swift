@@ -201,7 +201,8 @@ struct ScanCore: Sendable {
         let work = files
             .filter { meta in
                 guard let d = result[meta.url.path] else { return true }
-                return d.parserRevision != 2 || d.missing || d.size != meta.size || abs(d.mtime - meta.mtime) > 0.0005
+                let revision = source == .codex ? CodexParser.revision : 2
+                return d.parserRevision != revision || d.missing || d.size != meta.size || abs(d.mtime - meta.mtime) > 0.0005
             }
             .sorted { $0.mtime < $1.mtime }
 

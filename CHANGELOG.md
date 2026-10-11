@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Workshops: recognize current Codex subagent parent metadata and preserve child identities when forked rollouts replay parent headers. Repair cached session metadata without replaying usage, and keep nested/completed subagents with their loaded parent.
+
 
 ## [2.3.0] - 2026-09-25
 

@@ -193,11 +193,14 @@ struct WorkshopActivityReader: Sendable {
             let p = row["payload"] as? [String: Any] ?? [:]
             let kind = p["type"] as? String ?? ""
             if type == "session_meta" {
+                // Forked subagents replay their parent's metadata after their
+                // own header. That history must never replace their identity.
+                guard sessionID == nil else { return }
                 sessionID = p["id"] as? String ?? p["session_id"] as? String
                 cwd = p["cwd"] as? String
                 let origin = p["source"] as? [String: Any]
                 let subagent = origin?["subagent"] as? [String: Any]
-                let spawn = subagent?["spawn"] as? [String: Any]
+                let spawn = subagent?["thread_spawn"] as? [String: Any] ?? subagent?["spawn"] as? [String: Any]
                 parentSessionID = p["parent_thread_id"] as? String ?? spawn?["parent_thread_id"] as? String
             } else if type == "turn_context" {
                 model = p["model"] as? String ?? model
