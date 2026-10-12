@@ -34,18 +34,21 @@ final class CodexTests {
         return #"{"timestamp":"\#(ts)","type":"session_meta","payload":{"id":"\#(id)","timestamp":"\#(ts)","cwd":"\#(cwd)"\#(git),"originator":"codex-tui","cli_version":"0.142.2","source":"cli","model_provider":"openai"}}"#
     }
 
-    private func turnContext(model: String, ts: String = "2026-07-07T10:00:01.000Z") -> String {
-        #"{"timestamp":"\#(ts)","type":"turn_context","payload":{"turn_id":"t","cwd":"/Users/x/Documents/Proj","approval_policy":"on-request","model":"\#(model)","personality":"pragmatic"}}"#
+    private func turnContext(model: String, cwd: String = "/Users/x/Documents/Proj", ts: String = "2026-07-07T10:00:01.000Z") -> String {
+        #"{"timestamp":"\#(ts)","type":"turn_context","payload":{"turn_id":"t","cwd":"\#(cwd)","approval_policy":"on-request","model":"\#(model)","personality":"pragmatic"}}"#
     }
 
     private func tokenCount(
         input: Int, cached: Int = 0, output: Int,
+        total running: Int? = nil,
         ts: String = "2026-07-07T10:00:02.000Z",
         window: Int = 258_400
     ) -> String {
         let total = input + output
         let usage = #"{"input_tokens":\#(input),"cached_input_tokens":\#(cached),"output_tokens":\#(output),"reasoning_output_tokens":0,"total_tokens":\#(total)}"#
-        return #"{"timestamp":"\#(ts)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":\#(usage),"last_token_usage":\#(usage),"model_context_window":\#(window)},"rate_limits":{"limit_id":"codex","primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1776849578}}}}"#
+        // The running total defaults to this call alone; pass it to model a later call.
+        let cumulative = running.map { #"{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":\#($0)}"# } ?? usage
+        return #"{"timestamp":"\#(ts)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":\#(cumulative),"last_token_usage":\#(usage),"model_context_window":\#(window)},"rate_limits":{"limit_id":"codex","primary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1776849578}}}}"#
     }
 
     private func nullInfoTokenCount(ts: String = "2026-07-07T10:00:03.000Z") -> String {
@@ -78,6 +81,139 @@ final class CodexTests {
     }
 
     // MARK: parsing
+
+    // Shaped like a CLI 0.153 `thread_spawn` fork: own header, then the parent's
+    // header and history replayed at the fork instant, then the child's turn.
+    private func spawnHeader(
+        id: String = "019f03e2-0773-7891-a355-b056f10fc200",
+        parent: String = "root",
+        nested: Bool = true, topLevel: Bool = true, forked: Bool = true,
+        cwd: String = "/child", branch: String = "child-branch",
+        ts: String = "2026-07-07T10:00:00.000Z"
+    ) -> String {
+        let nestedParent = nested ? #""parent_thread_id":"\#(parent)","# : ""
+        let top = topLevel ? #""parent_thread_id":"\#(parent)","# : ""
+        let fork = forked ? #""forked_from_id":"\#(parent)","# : ""
+        return #"{"timestamp":"\#(ts)","type":"session_meta","payload":{"id":"\#(id)","session_id":"\#(parent)",\#(top)\#(fork)"cwd":"\#(cwd)","git":{"branch":"\#(branch)"},"agent_nickname":"Jason","source":{"subagent":{"thread_spawn":{\#(nestedParent)"depth":1,"agent_nickname":"Jason"}}}}}"#
+    }
+
+    private func forkedChild() -> [String] {
+        let fork = "2026-07-07T10:00:00.000Z"
+        return [
+            spawnHeader(ts: fork),
+            meta(id: "root", cwd: "/parent", branch: "parent-branch", ts: fork),
+            turnContext(model: "gpt-5.4", cwd: "/parent", ts: fork),
+            tokenCount(input: 7_000, output: 700, ts: fork),
+            #"{"timestamp":"\#(fork)","type":"event_msg","payload":{"type":"task_complete"}}"#,
+            #"{"timestamp":"2026-07-07T10:00:00.020Z","type":"event_msg","payload":{"type":"thread_settings_applied"}}"#,
+            turnContext(model: "gpt-5.5", cwd: "/child", ts: "2026-07-07T10:00:01.000Z"),
+            tokenCount(input: 100, output: 10, ts: "2026-07-07T10:00:02.000Z"),
+        ]
+    }
+
+    @Test func forkedSubagentKeepsItsOwnIdentityAndSkipsTheReplay() throws {
+        let digest = try scan(write(forkedChild()))
+        #expect(digest.sessionId == "019f03e2-0773-7891-a355-b056f10fc200")
+        #expect(digest.parentSessionId == "root")
+        #expect(digest.cwd == "/child")
+        #expect(digest.gitBranch == "child-branch")
+        // Only the child's own call; the parent's replayed usage is not billed again.
+        #expect(digest.totals.total == 110)
+        #expect(digest.accountingBuckets.map(\.model) == ["gpt-5.5"])
+        #expect(digest.accountingBuckets.allSatisfy { $0.branch == "child-branch" })
+    }
+
+    @Test func spawnParentReadFromEitherHeaderField() throws {
+        let nestedOnly = try scan(write([spawnHeader(topLevel: false, forked: false)], name: "a.jsonl"))
+        #expect(nestedOnly.parentSessionId == "root")
+        let topLevelOnly = try scan(write([spawnHeader(nested: false, forked: false)], name: "b.jsonl"))
+        #expect(topLevelOnly.parentSessionId == "root")
+        let legacy = #"{"timestamp":"2026-07-07T10:00:00.000Z","type":"session_meta","payload":{"id":"c","source":{"subagent":{"spawn":{"parent_thread_id":"root"}}}}}"#
+        #expect(try scan(write([legacy], name: "c.jsonl")).parentSessionId == "root")
+    }
+
+    @Test func helperThreadsAreNotSubagents() throws {
+        // /review and the auto-approval guardian name a parent too, but nobody
+        // delegated work to them.
+        let review = #"{"timestamp":"2026-07-07T10:00:00.000Z","type":"session_meta","payload":{"id":"r","parent_thread_id":"root","forked_from_id":"root","thread_source":"subagent","source":{"subagent":"review"}}}"#
+        let guardian = #"{"timestamp":"2026-07-07T10:00:00.000Z","type":"session_meta","payload":{"id":"g","parent_thread_id":"root","thread_source":"guardian_review","source":{"subagent":{"other":"guardian"}}}}"#
+        #expect(try scan(write([review, turnContext(model: "gpt-5.5"), tokenCount(input: 100, output: 10)], name: "r.jsonl")).parentSessionId == nil)
+        #expect(try scan(write([guardian], name: "g.jsonl")).parentSessionId == nil)
+        // A forked review replays nothing, so its first call still counts.
+        #expect(try scan(write([review, turnContext(model: "gpt-5.5", ts: "2026-07-07T10:00:00.000Z"), tokenCount(input: 100, output: 10, ts: "2026-07-07T10:00:00.000Z")], name: "r2.jsonl")).totals.total == 110)
+    }
+
+    @Test func undecodableFirstHeaderStillOwnsTheIdentity() throws {
+        let odd = #"{"timestamp":"2026-07-07T10:00:00.000Z","type":"session_meta","payload":{"id":"child","git":"unexpected"}}"#
+        let digest = try scan(write([odd, meta(id: "root")]))
+        #expect(digest.sessionId == "019f03e2-0773-7891-a355-b056f10fc200") // the filename, never the replayed parent
+    }
+
+    @Test func revisionTwoDigestsAreReparsedFromScratch() throws {
+        let url = try write(forkedChild())
+        let fresh = try scan(url)
+        // What ≤ 2.3.0 cached for this file: the parent's id and cwd from the
+        // replayed header, its usage counted, its records on the parent's branch.
+        var old = fresh
+        old.parserRevision = 2
+        old.sessionId = "root"
+        old.parentSessionId = nil
+        old.cwd = "/parent"
+        old.gitBranch = "parent-branch"
+        old.records = (old.records ?? []).map { var r = $0; r.branch = "parent-branch"; return r }
+            + [HourBucket(hour: 0, model: "gpt-5.4", totals: TokenTotals(input: 7_000, output: 700, messages: 1), branch: "parent-branch")]
+        old.buckets.append(HourBucket(hour: 0, model: "gpt-5.4", totals: TokenTotals(input: 7_000, output: 700, messages: 1)))
+        let repaired = try scan(url, previous: old)
+        #expect(repaired.parserRevision == CodexParser.revision)
+        #expect(repaired.sessionId == fresh.sessionId)
+        #expect(repaired.parentSessionId == "root")
+        #expect(repaired.cwd == fresh.cwd)
+        #expect(repaired.projectKey == fresh.projectKey)
+        #expect(repaired.gitBranch == fresh.gitBranch)
+        #expect(repaired.records == fresh.records)
+        #expect(repaired.totals == fresh.totals)
+    }
+
+    @Test func missingRevisionTwoForkGetsItsOwnIdBack() throws {
+        let root = dir.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let gone = root.appendingPathComponent("rollout-2026-07-07T10-00-00-019f03e2-0773-7891-a355-b056f10fc201.jsonl").path
+        var archived = FileDigest(path: gone, source: .codex, sessionId: "root", projectDir: "p")
+        archived.missing = true
+        archived.parserRevision = 2
+        let core = ScanCore(source: .codex, root: root, cacheURL: dir.appendingPathComponent("cache.json"))
+        let result = core.refreshed(digests: [gone: archived], claims: [:])
+        #expect(result.digests[gone]?.sessionId == "019f03e2-0773-7891-a355-b056f10fc201")
+        // Idempotent: nothing left to repair on the next pass.
+        #expect(core.refreshed(digests: result.digests, claims: [:]).changed == false)
+    }
+
+    @Test func resentSnapshotsAreNotCountedAgain() throws {
+        let call = tokenCount(input: 100, output: 10, ts: "2026-07-07T10:00:02.000Z")
+        let resent = tokenCount(input: 100, output: 10, ts: "2026-07-07T10:00:03.000Z") // same last and total
+        let url = try write([meta(), turnContext(model: "gpt-5.5"), call, resent, nullInfoTokenCount(), resent])
+        #expect(try scan(url).totals.total == 110)
+
+        // The same per-call usage with a moved running total is a real call.
+        let next = tokenCount(input: 100, output: 10, total: 220, ts: "2026-07-07T10:00:04.000Z")
+        let second = try write([meta(), turnContext(model: "gpt-5.5"), call, next], name: "second.jsonl")
+        #expect(try scan(second).totals.total == 220)
+
+        // The key survives an incremental boundary between the call and its re-send.
+        let split = try write([meta(), turnContext(model: "gpt-5.5"), call], name: "split.jsonl")
+        let first = try scan(split)
+        let handle = try FileHandle(forWritingTo: split)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((resent + "\n").utf8))
+        try handle.close()
+        #expect(try scan(split, previous: first).totals.total == 110)
+    }
+
+    @Test func titleComesFromCurrentPromptEvents() throws {
+        let prompt = #"{"timestamp":"2026-07-07T10:00:00.500Z","type":"event_msg","payload":{"type":"item_completed","thread_id":"t","turn_id":"u","item":{"type":"UserMessage","id":"item-1","content":[{"type":"text","text":"Add an offline model\nmore","text_elements":[]}]}}}"#
+        let digest = try scan(write([meta(), prompt, turnContext(model: "gpt-5.5"), tokenCount(input: 100, output: 10)]))
+        #expect(digest.fallbackTitle == "Add an offline model")
+    }
 
     @Test func basicParseSplitsCachedInput() throws {
         let url = try write([

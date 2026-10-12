@@ -88,6 +88,26 @@ struct WorkshopAgent: Identifiable, Equatable, Sendable {
     var projectName: String { URL(fileURLWithPath: projectPath).lastPathComponent.nonEmpty ?? "Workspace" }
     var parentID: String? { parentSessionID.map { Self.key(profile: profileID, source: source, session: $0) } }
     static func key(profile: String, source: UsageSource, session: String) -> String { "\(source.rawValue)|\(profile)|\(session)" }
+
+    /// The `limit` agents most worth a seat — waiting on the user, then
+    /// working, then most recently active — kept in their given order so
+    /// desks don't reshuffle as states change. Without this a team larger
+    /// than its room would hide its newest, busiest members.
+    static func mostRelevant(_ agents: [WorkshopAgent], limit: Int) -> [WorkshopAgent] {
+        guard agents.count > limit else { return agents }
+        func rank(_ a: WorkshopAgent) -> Int {
+            switch a.state {
+            case .needsInput: return 0
+            case .working, .usingTool, .waitingForAgents: return 1
+            default: return 2
+            }
+        }
+        let kept = Set(agents.indices
+            .sorted { (rank(agents[$0]), -(agents[$0].lastActivity?.timeIntervalSince1970 ?? 0), $0)
+                < (rank(agents[$1]), -(agents[$1].lastActivity?.timeIntervalSince1970 ?? 0), $1) }
+            .prefix(max(limit, 0)))
+        return agents.indices.filter(kept.contains).map { agents[$0] }
+    }
 }
 
 private extension String {
@@ -181,9 +201,17 @@ struct WorkshopActivityReader: Sendable {
     private(set) var sessionID: String?
     private(set) var cwd: String?
     private(set) var model: String?
+    /// Codex names spawned agents ("Jason"); their ids alone are UUIDv7
+    /// timestamps, so siblings spawned together look identical.
+    private(set) var agentName: String?
     private(set) var events: [WorkshopEvent] = []
     private var pendingTools: [(id: String, name: String)] = []
+    /// A forked Codex agent's file replays its parent's history, stamped with
+    /// the fork instant, before its own first turn.
+    private var replaying = false
+    private var replayStamp: String?
     private var sequence = 0
+    private var hasHeader = false
 
     mutating func consume(_ data: Data, source: UsageSource) {
         guard let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -192,13 +220,33 @@ struct WorkshopActivityReader: Sendable {
         if source == .codex {
             let p = row["payload"] as? [String: Any] ?? [:]
             let kind = p["type"] as? String ?? ""
+            if replaying {
+                // The header is read twice (once on its own, once from the
+                // start of a small file); neither copy starts the replay run.
+                if type == "session_meta" { return }
+                let stamp = row["timestamp"] as? String
+                if replayStamp == nil { replayStamp = stamp }
+                if stamp != nil, stamp == replayStamp { return }
+                replaying = false
+            }
             if type == "session_meta" {
-                sessionID = p["id"] as? String ?? p["session_id"] as? String
+                // Only the file's first header describes this thread; a fork's
+                // replayed parent header must never replace its identity.
+                guard !hasHeader else { return }
+                hasHeader = true
+                // Never `session_id`: in a child it names the spawn tree's root.
+                // The monitor falls back to the rollout filename's UUID.
+                sessionID = p["id"] as? String
                 cwd = p["cwd"] as? String
                 let origin = p["source"] as? [String: Any]
                 let subagent = origin?["subagent"] as? [String: Any]
-                let spawn = subagent?["spawn"] as? [String: Any]
-                parentSessionID = p["parent_thread_id"] as? String ?? spawn?["parent_thread_id"] as? String
+                // Only agents the lead spawned join its team. /review and the
+                // auto-approval guardian also name a parent, but are helpers.
+                if let spawn = subagent?["thread_spawn"] as? [String: Any] ?? subagent?["spawn"] as? [String: Any] {
+                    parentSessionID = spawn["parent_thread_id"] as? String ?? p["parent_thread_id"] as? String
+                    agentName = p["agent_nickname"] as? String ?? spawn["agent_nickname"] as? String
+                    replaying = p["forked_from_id"] is String
+                }
             } else if type == "turn_context" {
                 model = p["model"] as? String ?? model
                 cwd = p["cwd"] as? String ?? cwd
@@ -246,6 +294,24 @@ struct WorkshopActivityReader: Sendable {
             } else if type == "system", row["subtype"] as? String == "turn_duration" {
                 pendingTools.removeAll(); transition(.completed, "Turn finished · session still open", at: timestamp)
             }
+        }
+    }
+
+    /// Read from the middle of a large file: the fork replay, if any, is
+    /// long past.
+    mutating func skipReplay() { replaying = false }
+
+    /// The writer is gone, so no turn is in progress whatever the transcript's
+    /// tail last said: Codex released a finished agent, or its process ended
+    /// mid-turn and nothing can answer a pending approval.
+    mutating func release() {
+        pendingTools.removeAll()
+        tool = nil
+        switch state {
+        case .completed: activity = "Finished"
+        case .working, .usingTool, .waitingForAgents, .needsInput:
+            state = .interrupted; activity = "Stopped before finishing"
+        default: break
         }
     }
 

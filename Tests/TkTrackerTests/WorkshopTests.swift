@@ -83,11 +83,127 @@ struct WorkshopTests {
 
     @Test func metadataSupportsBothCodexParentFormats() throws {
         var current = WorkshopActivityReader()
-        current.consume(try row("session_meta", ["id": "child", "parent_thread_id": "root", "cwd": "/project"]), source: .codex)
+        current.consume(try row("session_meta", ["id": "child", "parent_thread_id": "root", "cwd": "/project", "source": ["subagent": ["thread_spawn": ["depth": 1]]]]), source: .codex)
         #expect(current.parentSessionID == "root")
+        // Helpers name a parent too, but are not delegated agents.
+        var review = WorkshopActivityReader()
+        review.consume(try row("session_meta", ["id": "r", "parent_thread_id": "root", "source": ["subagent": "review"]]), source: .codex)
+        #expect(review.parentSessionID == nil)
+        var guardian = WorkshopActivityReader()
+        guardian.consume(try row("session_meta", ["id": "g", "parent_thread_id": "root", "source": ["subagent": ["other": "guardian"]]]), source: .codex)
+        #expect(guardian.parentSessionID == nil)
+        // `session_id` is the spawn tree's root, never this thread's id.
+        var anonymous = WorkshopActivityReader()
+        anonymous.consume(try row("session_meta", ["session_id": "root"]), source: .codex)
+        #expect(anonymous.sessionID == nil)
         var legacy = WorkshopActivityReader()
         legacy.consume(try row("session_meta", ["id": "child", "source": ["subagent": ["spawn": ["parent_thread_id": "root"]]]]), source: .codex)
         #expect(legacy.parentSessionID == "root")
+        var spawned = WorkshopActivityReader()
+        spawned.consume(try row("session_meta", ["id": "child", "source": ["subagent": ["thread_spawn": ["parent_thread_id": "root"]]]]), source: .codex)
+        spawned.consume(try row("session_meta", ["id": "root", "cwd": "/inherited"]), source: .codex)
+        #expect(spawned.sessionID == "child")
+        #expect(spawned.parentSessionID == "root")
+    }
+
+    @Test func codexTeamStaysWithLoadedParentWithoutChildWriters() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tktracker-codex-team-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var digests: [FileDigest] = []
+        for (id, parent) in [("lead", nil), ("child", "lead"), ("nested", "child"), ("other", "absent"), ("foreign", "lead")] as [(String, String?)] {
+            let file = root.appendingPathComponent("\(id).jsonl")
+            var metadata: [String: Any] = ["id": id, "cwd": "/project"]
+            if let parent { metadata["source"] = ["subagent": ["thread_spawn": ["parent_thread_id": parent]]] }
+            var data = try row("session_meta", metadata); data.append(10)
+            data.append(try row("event_msg", ["type": "task_complete"])); data.append(10)
+            try data.write(to: file)
+            digests.append(FileDigest(path: ScanCore.canonicalPath(file), source: .codex, sessionId: id, projectDir: "project",
+                parentSessionId: parent, profileId: id == "foreign" ? "other-account" : "test"))
+        }
+        let profile = SourceProfile(id: "test", name: "Test", source: .codex, rootPath: root.path)
+        let lead = digests.first!.path
+        let monitor = WorkshopMonitor(processProbe: { .init(codexTranscripts: FileManager.default.fileExists(atPath: lead) ? [lead] : []) })
+        let snapshot = await monitor.snapshot(profiles: [profile], digests: digests, keepsTitles: false)
+        #expect(Set(snapshot.agents.map(\.sessionID)) == ["lead", "child", "nested"])
+        #expect(WorkshopIsland.group(snapshot.agents).first?.subagents.count == 2)
+        #expect(snapshot.agents.allSatisfy { $0.state == .completed })
+        try FileManager.default.removeItem(atPath: lead)
+        #expect(await monitor.snapshot(profiles: [profile], digests: digests, keepsTitles: false).agents.count == 3)
+        #expect(await monitor.snapshot(profiles: [profile], digests: digests, keepsTitles: false).agents.isEmpty)
+    }
+
+    /// A lead holding its writer plus one released child per (state-ending event, activity time).
+    private func codexTeam(_ children: [(id: String, last: [String: Any], at: String)], leadStart: Date? = nil, uncertain: Bool = false) async throws -> WorkshopMonitor.Snapshot {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tktracker-codex-run-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var digests: [FileDigest] = []
+        for (id, last, at) in [("lead", ["type": "task_started"] as [String: Any], "2026-09-08T20:00:00Z")] + children {
+            let file = root.appendingPathComponent("\(id).jsonl")
+            var header: [String: Any] = ["id": id, "cwd": "/project"]
+            if id != "lead" { header["source"] = ["subagent": ["thread_spawn": ["parent_thread_id": "lead", "agent_nickname": "Nick-\(id)"]]] }
+            var data = try row("session_meta", header, timestamp: at); data.append(10)
+            data.append(try row("event_msg", last, timestamp: at)); data.append(10)
+            try data.write(to: file)
+            let ts = JSONLParser.epoch(fromISO8601: at)
+            digests.append(FileDigest(path: ScanCore.canonicalPath(file), source: .codex, sessionId: id, projectDir: "project",
+                firstTs: ts, lastTs: ts, parentSessionId: id == "lead" ? nil : "lead", profileId: "test"))
+        }
+        let profile = SourceProfile(id: "test", name: "Test", source: .codex, rootPath: root.path)
+        let lead = digests[0].path
+        let starts = leadStart.map { [lead: $0] } ?? [:]
+        let monitor = WorkshopMonitor(processProbe: { .init(codexTranscripts: [lead], codexUncertain: uncertain, codexStarts: starts) })
+        return await monitor.snapshot(profiles: [profile], digests: digests, keepsTitles: false, now: now)
+    }
+
+    @Test func releasedCodexChildrenAreNeverShownWorking() async throws {
+        let snapshot = try await codexTeam([
+            ("crashed", ["type": "exec_approval_request"], "2026-09-08T20:00:01Z"),
+            ("done", ["type": "task_complete"], "2026-09-08T20:00:02Z"),
+        ])
+        let byID = Dictionary(uniqueKeysWithValues: snapshot.agents.map { ($0.sessionID, $0) })
+        #expect(byID["lead"]?.state == .working) // still holds its writer
+        #expect(byID["crashed"]?.state == .interrupted)
+        #expect(byID["done"]?.state == .completed)
+        #expect(byID["done"]?.activity.contains("still open") == false)
+        #expect(byID["done"]?.title == "Nick-done") // nickname, not a UUIDv7 timestamp prefix
+        // A probe that could not see every writer is no evidence of release.
+        let unsure = try await codexTeam([("busy", ["type": "task_started"], "2026-09-08T20:00:01Z")], uncertain: true)
+        #expect(unsure.agents.first { $0.sessionID == "busy" }?.state == .working)
+    }
+
+    @Test func resumedCodexLeadSeatsOnlyItsCurrentRun() async throws {
+        let snapshot = try await codexTeam([
+            ("old", ["type": "task_complete"], "2026-09-01T09:00:00Z"),
+            ("new", ["type": "task_complete"], "2026-09-08T20:00:01Z"),
+        ], leadStart: Date(timeIntervalSince1970: JSONLParser.epoch(fromISO8601: "2026-09-08T19:00:00Z")!))
+        #expect(Set(snapshot.agents.map(\.sessionID)) == ["lead", "new"])
+    }
+
+    @Test func forkReplayIsNotPartOfTheChildsTimeline() throws {
+        var reader = WorkshopActivityReader()
+        let fork = "2026-09-08T20:00:00.000Z"
+        let header = try row("session_meta", ["id": "child", "forked_from_id": "root", "source": ["subagent": ["thread_spawn": ["parent_thread_id": "root"]]]], timestamp: fork)
+        reader.consume(header, source: .codex)
+        reader.consume(header, source: .codex) // a small file is read again from its start
+        reader.consume(try row("session_meta", ["id": "root"], timestamp: fork), source: .codex)
+        for type in ["task_started", "task_complete", "task_started", "task_complete"] {
+            reader.consume(try row("event_msg", ["type": type], timestamp: fork), source: .codex)
+        }
+        #expect(reader.events.isEmpty)
+        reader.consume(try row("event_msg", ["type": "task_started"], timestamp: "2026-09-08T20:00:00.020Z"), source: .codex)
+        #expect(reader.sessionID == "child")
+        #expect(reader.events.map(\.state) == [.working])
+    }
+
+    @Test func crowdedRoomsSeatTheBusiestSubagents() {
+        var team = (0..<6).map { agent("s\($0)", parent: "lead", state: .completed) }
+        team[4].state = .working
+        team[5].state = .needsInput
+        let shown = WorkshopAgent.mostRelevant(team, limit: 3)
+        #expect(shown.map(\.sessionID) == ["s0", "s4", "s5"]) // the two busy ones, in their original order
+        #expect(WorkshopAgent.mostRelevant(team, limit: 10).count == 6)
     }
 
     @Test func waitingForAToolIsDistinctFromWaitingForAgents() throws {
@@ -190,7 +306,7 @@ struct WorkshopTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID().uuidString.lowercased()
         let path = root.appendingPathComponent("rollout-\(id).jsonl")
-        var data = try row("session_meta", ["id": id, "cwd": "/project", "parent_thread_id": "root"])
+        var data = try row("session_meta", ["id": id, "cwd": "/project", "source": ["subagent": ["thread_spawn": ["parent_thread_id": "root"]]]])
         data.append(10)
         let start = try row("event_msg", ["type": "task_started"])
         data.append(start.prefix(start.count / 2))

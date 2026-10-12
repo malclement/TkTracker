@@ -54,6 +54,14 @@ session actually closes. Resuming a session restores the same avatar identity.
   descriptors under enabled account roots. This tracks a *loaded session*, not
   which tab has focus. Codex can keep a session loaded after a tab closes; its
   room empties when Codex releases the transcript or its process exits.
+  Agents the session spawned, including completed and nested ones, stay with
+  their loaded parent after Codex releases their individual writers, as long as
+  they were active during the parent's current run. They leave when the parent
+  unloads. A released agent is never shown working: one that ended mid-turn
+  shows **Interrupted**. Spawned agents go by the nickname Codex gives them.
+  `/review` runs and auto-approval reviews are helpers, not team members. The
+  first rollout header supplies the identity; a fork's replay of its parent's
+  header and history is ignored.
   The current app-server documentation describes a 30-minute inactivity grace
   period after the last subscriber leaves. TkTracker does not unload sessions.
 - **Claude Code:** local `sessions/*.json` metadata is matched to a live process

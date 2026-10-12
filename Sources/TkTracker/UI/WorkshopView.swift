@@ -223,9 +223,14 @@ struct WorkshopView: View {
 
     /// The Sims household panel: everyone on screen, ringed in their state colour.
     private var household: some View {
-        let everyone = visibleProjects.flatMap(\.agents)
+        // Leads first, as in the rooms; then the subagents most worth a look.
+        let sessions = visibleProjects.flatMap(\.sessions)
+        let leads = sessions.prefix(Self.householdLimit).map(\.lead.id)
+        let subagents = WorkshopAgent.mostRelevant(sessions.flatMap(\.subagents), limit: Self.householdLimit - leads.count)
+        let shown = Set(leads + subagents.map(\.id))
+        let everyone = visibleProjects.flatMap(\.agents).filter { shown.contains($0.id) }
         return HStack(spacing: 7) {
-            ForEach(Array(everyone.prefix(Self.householdLimit))) { agent in
+            ForEach(everyone) { agent in
                 Button { select(agent.id) } label: {
                     WorkshopPortrait(agent: agent, size: 34)
                         .overlay(alignment: .topTrailing) {

@@ -67,6 +67,7 @@ enum JSONLParser {
     private static let titleNeedle = Data("\"aiTitle\"".utf8)
     private static let userNeedle = Data("\"user\"".utf8)
 
+    static let revision = 2
     private static let dedupeWindow = 400
     private static let dedupePersisted = 250
 
@@ -80,7 +81,7 @@ enum JSONLParser {
     ) -> FileDigest {
         let sessionId = url.deletingPathExtension().lastPathComponent
         var digest: FileDigest
-        if let prev = previous, size >= prev.offset, prev.parserRevision == 2 {
+        if let prev = previous, size >= prev.offset, prev.parserRevision == revision {
             digest = prev
         } else {
             // New file, or truncated/rewritten below our offset: parse from scratch.
@@ -90,7 +91,7 @@ enum JSONLParser {
             digest.parentSessionId = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
         }
         digest.missing = false
-        digest.parserRevision = 2
+        digest.parserRevision = revision
         if digest.records == nil { digest.records = [] }
 
         guard let handle = try? FileHandle(forReadingFrom: url) else { return previous ?? digest }
