@@ -134,7 +134,8 @@ struct FileDigest: Codable, Sendable, Identifiable, Equatable {
 
     var buckets: [HourBucket] = []
     /// Tail of recently seen (messageId:requestId) keys so incremental parses
-    /// keep deduping streamed duplicates across the resume boundary.
+    /// keep deduping streamed duplicates across the resume boundary. Codex
+    /// keeps one entry here: its last usage snapshot, to skip a re-send.
     var recentKeys: [String] = []
 
     enum CodingKeys: String, CodingKey {

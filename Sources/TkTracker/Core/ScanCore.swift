@@ -195,6 +195,21 @@ struct ScanCore: Sendable {
             }
         }
 
+        // A Codex fork cached by revision 2 took its parent's id from the
+        // replayed header. Present files are re-parsed below; a pruned or
+        // archived one never will be, so give it back its own id (the rollout
+        // filename UUID) before it collides with the real parent's family.
+        if self.source == .codex {
+            for (path, digest) in result where digest.missing && (digest.parserRevision ?? 0) < CodexParser.revision {
+                let own = CodexParser.fallbackSessionId(url: URL(fileURLWithPath: path))
+                guard UUID(uuidString: own) != nil, digest.sessionId != own else { continue }
+                var d = digest
+                d.sessionId = own
+                result[path] = d
+                changed = true
+            }
+        }
+
         // Oldest-first biases the cold-scan claim race toward original sessions.
         // Exactly-once counting never depends on order — only display attribution
         // does, and claims persist, so attribution is stable after the first scan.

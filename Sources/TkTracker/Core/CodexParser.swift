@@ -5,10 +5,16 @@ import Foundation
 ///
 /// Usage comes from `event_msg`/`token_count` lines: each carries
 /// `last_token_usage` — the token counts of exactly one API call — plus the
-/// model's context window. Summing those per-call counts is exactly-once by
-/// construction (verified on real data: resumes, forks and subagent threads
-/// never replay another file's token events), and unlike the cumulative
-/// `total_token_usage` it is immune to the rebase that compaction applies.
+/// model's context window. Codex re-sends the previous snapshot unchanged
+/// (identical `last_token_usage` *and* `total_token_usage`, usually only the
+/// rate limits moved); those repeats are not new calls and are skipped, or
+/// Codex usage comes out ~10% high on real data.
+///
+/// A forked subagent rollout opens with its own `session_meta`, then replays
+/// the parent's history stamped with the fork instant (current CLIs also
+/// replay the parent's `session_meta`; 0.125.0 replayed two of its
+/// `token_count`s). Identity comes from the first header only, and the
+/// replayed segment is never counted.
 /// `cached_input_tokens` is the cached subset of `input_tokens`, so input is
 /// split into uncached input, cache reads and any explicitly reported cache writes.
 ///
@@ -16,11 +22,18 @@ import Foundation
 /// mid-session). The rare usage seen before any turn context is held back and
 /// attributed to the first model the file declares — or left unpriced if the file never names one.
 enum CodexParser {
+    /// Bumped to 3 for snapshot dedupe, fork-replay skipping and first-header
+    /// identity. Older digests are re-parsed from scratch: their records carry
+    /// the inflated usage and the parent's branch, which no in-place repair
+    /// could undo.
     static let revision = 3
     private static let usageNeedle = Data("\"token_count\"".utf8)
     private static let metaNeedle = Data("\"session_meta\"".utf8)
     private static let turnNeedle = Data("\"turn_context\"".utf8)
     private static let userNeedle = Data("\"user_message\"".utf8)
+    /// Current CLIs record prompts as `item_completed` events instead.
+    private static let userItemNeedle = Data("\"UserMessage\"".utf8)
+    private static let timestampNeedle = Data("\"timestamp\":\"".utf8)
 
     /// Attribution for usage in a file that never declares its model.
     static let fallbackModel = "unknown-codex"
@@ -32,7 +45,7 @@ enum CodexParser {
         mtime: Double
     ) -> FileDigest {
         var digest: FileDigest
-        if let prev = previous, size >= prev.offset, [2, revision].contains(prev.parserRevision ?? 0) {
+        if let prev = previous, size >= prev.offset, prev.parserRevision == revision {
             digest = prev
         } else {
             // New file, or truncated/rewritten below our offset: parse from scratch.
@@ -47,15 +60,6 @@ enum CodexParser {
         defer { try? handle.close() }
 
         var state = ScanState(digest: digest)
-        if previous?.parserRevision == 2, digest.offset > 0 {
-            // Repair cached identity from the file's own header, retaining all
-            // accounting records and the committed offset without replaying usage.
-            if let header = try? handle.read(upToCount: 1024 * 1024), let newline = header.firstIndex(of: 10) {
-                state.hasSessionMetadata = false
-                processLine(Data(header[..<newline]), state: &state)
-            }
-            state.hasSessionMetadata = true
-        }
         JSONLChunker.forEachLine(
             handle: handle,
             from: digest.offset,
@@ -71,7 +75,7 @@ enum CodexParser {
 
     /// Rollout file names end in the thread UUID (`rollout-<timestamp>-<uuid>`);
     /// used until the session_meta line supplies the id directly.
-    private static func fallbackSessionId(url: URL) -> String {
+    static func fallbackSessionId(url: URL) -> String {
         let stem = url.deletingPathExtension().lastPathComponent
         if stem.count >= 36 {
             let candidate = String(stem.suffix(36))
@@ -99,7 +103,14 @@ enum CodexParser {
 
     private struct ScanState {
         var digest: FileDigest
+        /// Only the file's first `session_meta` describes this thread.
         var hasSessionMetadata: Bool
+        /// Set by a forked spawn's header: the lines that follow replay the
+        /// parent until the timestamp moves off the fork instant.
+        var replaying = false
+        var replayStamp: Data?
+        /// (last, total) of the previous usage snapshot, to skip re-sends.
+        var lastUsageKey: String?
         var buckets: [HourModelKey: TokenTotals]
         var currentModel: String?
         /// Usage seen before the file names a model, keyed by hour.
@@ -108,7 +119,10 @@ enum CodexParser {
 
         init(digest: FileDigest) {
             self.digest = digest
+            // A committed offset means the header (and any fork replay, which
+            // Codex writes in one burst at spawn) was already consumed.
             hasSessionMetadata = digest.offset > 0
+            lastUsageKey = digest.recentKeys.last
             var b: [HourModelKey: TokenTotals] = [:]
             for bucket in digest.buckets {
                 b[HourModelKey(hour: bucket.hour, model: bucket.model)] = bucket.totals
@@ -160,6 +174,7 @@ enum CodexParser {
 
         func finalized() -> FileDigest {
             var d = digest
+            d.recentKeys = lastUsageKey.map { [$0] } ?? []
             var all = buckets
             // The file hasn't named a model (yet): show the stray usage under
             // the family default rather than dropping it, but keep it recorded
@@ -183,6 +198,30 @@ enum CodexParser {
         if line.last == 0x0D { line = line.dropLast() } // CRLF safety
         guard !line.isEmpty else { return }
 
+        if state.replaying {
+            // Only a handful of lines; the stamp leads every line.
+            let stamp = timestamp(in: line)
+            if state.replayStamp == nil { state.replayStamp = stamp }
+            if stamp != nil, stamp == state.replayStamp {
+                // Replayed usage still moves the re-send key: 0.125.0 re-sent
+                // the parent's last snapshot as the child's first event.
+                if line.prefix(512).range(of: usageNeedle) != nil { processLine(line, state: &state, replayed: true) }
+                return
+            }
+            state.replaying = false
+        }
+        processLine(line, state: &state, replayed: false)
+    }
+
+    /// `{"timestamp":"<iso>",…` — the raw stamp bytes, compared verbatim.
+    private static func timestamp(in line: Data) -> Data? {
+        let head = line.prefix(96)
+        guard let open = head.range(of: timestampNeedle) else { return nil }
+        guard let close = head[open.upperBound...].firstIndex(of: 0x22) else { return nil }
+        return Data(head[open.upperBound..<close])
+    }
+
+    private static func processLine(_ line: Data, state: inout ScanState, replayed: Bool) {
         // Rollout lines put the discriminating type fields right after the
         // timestamp — within the first ~80 bytes on every CLI version observed
         // (512 leaves 6× headroom). Bounding the needle search matters here:
@@ -192,19 +231,35 @@ enum CodexParser {
         let hasUsage = head.range(of: usageNeedle) != nil
         let hasMeta = head.range(of: metaNeedle) != nil
         let hasTurn = head.range(of: turnNeedle) != nil
-        let wantsUserLine = state.digest.fallbackTitle == nil && head.range(of: userNeedle) != nil
+        let wantsUserLine = state.digest.fallbackTitle == nil
+            && (head.range(of: userNeedle) != nil || head.range(of: userItemNeedle) != nil)
         let compaction = head.range(of: Data("context_compacted".utf8)) != nil
         guard hasUsage || hasMeta || hasTurn || wantsUserLine || compaction else { return }
 
         guard let raw = try? state.decoder.decode(RawCodexLine.self, from: Data(line)),
               let payload = raw.payload
-        else { return }
+        else {
+            // An undecodable first header still claims the slot: otherwise a
+            // replayed parent header would become this thread's identity.
+            if hasMeta, (try? state.decoder.decode(RawCodexType.self, from: Data(line)))?.type == "session_meta" {
+                state.hasSessionMetadata = true
+            }
+            return
+        }
 
         switch raw.type {
         case "session_meta":
             guard !state.hasSessionMetadata else { return }
             state.hasSessionMetadata = true
-            state.digest.parentSessionId = payload.parent_thread_id ?? payload.source?.parentThreadId
+            // Only agents the lead spawned are its subagents. /review and the
+            // auto-approval guardian also carry a parent_thread_id, but they
+            // are helpers, not delegated work.
+            if let spawn = payload.source?.spawn {
+                state.digest.parentSessionId = spawn.parent_thread_id ?? payload.parent_thread_id
+                if payload.forked_from_id != nil { state.replaying = true }
+            }
+            // The filename UUID stays the fallback; never `session_id`, which
+            // names the root of the spawn tree.
             if let id = payload.id, !id.isEmpty { state.digest.sessionId = id }
             if let cwd = payload.cwd, !cwd.isEmpty {
                 state.digest.cwd = cwd
@@ -233,9 +288,15 @@ enum CodexParser {
                     state.digest.quota = QuotaSnapshot(observedAt: Date(timeIntervalSince1970: timestamp), origin: "Local session", windows: quota.windows)
                 }
                 // `info` is null on rate-limit-only updates; `last_token_usage`
-                // is the per-call delta (the cumulative counter rebases on
-                // compaction and would undercount).
+                // is the per-call delta. A snapshot equal to the previous one
+                // in both counters is a re-send, not a call.
                 guard let usage = payload.info?.lastTokenUsage else { return }
+                if let total = payload.info?.totalTokenUsage {
+                    let key = "\(usage.key)|\(total.key)"
+                    if key == state.lastUsageKey { return }
+                    state.lastUsageKey = key
+                }
+                guard !replayed else { return }
                 if let window = payload.info?.modelContextWindow, window > 0 {
                     state.digest.contextWindow = window
                 }
@@ -270,8 +331,10 @@ enum CodexParser {
                     if state.digest.markers == nil { state.digest.markers = [] }
                     state.digest.markers?.append(SessionMarker(timestamp: ts, kind: "Compaction"))
                 }
-            case "user_message":
-                guard state.digest.fallbackTitle == nil, let text = payload.message?.text else { return }
+            case "user_message", "item_completed":
+                let prompt = payload.type == "user_message" ? payload.message?.text
+                    : payload.item.flatMap { $0.type == "UserMessage" ? $0.text : nil }
+                guard state.digest.fallbackTitle == nil, let text = prompt else { return }
                 let firstLine = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
                     .first.map(String.init)?
                     .trimmingCharacters(in: .whitespaces) ?? ""
@@ -301,6 +364,7 @@ private struct RawCodexPayload: Decodable {
     // session_meta
     let id: String?
     let parent_thread_id: String?
+    let forked_from_id: String?
     let cwd: String?
     let git: RawCodexGit?
     // turn_context
@@ -308,12 +372,32 @@ private struct RawCodexPayload: Decodable {
     // event_msg
     let type: String?
     let message: RawCodexText?
+    let item: RawCodexItem?
     let info: RawCodexTokenInfo?
     let service_tier: String?
     let speed: String?
     let git_branch: String?
     let source: RawCodexOrigin?
     let rate_limits: RawQuota?
+}
+
+private struct RawCodexType: Decodable {
+    let type: String?
+}
+
+/// `item_completed` payloads; only a UserMessage's text is read.
+private struct RawCodexItem: Decodable {
+    var type: String?
+    var text: String?
+
+    init(from decoder: Decoder) throws {
+        struct Part: Decodable { var text: String? }
+        enum Keys: String, CodingKey { case type, content }
+        let c = try? decoder.container(keyedBy: Keys.self)
+        type = try? c?.decodeIfPresent(String.self, forKey: .type)
+        let parts = try? c?.decodeIfPresent([Part].self, forKey: .content)
+        text = parts?.compactMap(\.text).first
+    }
 }
 
 private struct RawCodexGit: Decodable {
@@ -338,10 +422,12 @@ private enum RawCodexText: Decodable {
 
 private struct RawCodexTokenInfo: Decodable {
     let lastTokenUsage: RawCodexUsage?
+    let totalTokenUsage: RawCodexUsage?
     let modelContextWindow: Int64?
 
     enum CodingKeys: String, CodingKey {
         case lastTokenUsage = "last_token_usage"
+        case totalTokenUsage = "total_token_usage"
         case modelContextWindow = "model_context_window"
     }
 }
@@ -352,6 +438,13 @@ private struct RawCodexUsage: Decodable {
     let outputTokens: Int64?
     let cacheWriteTokens: Int64?
     let cacheCreationInputTokens: Int64?
+    let reasoningOutputTokens: Int64?
+    let totalTokens: Int64?
+
+    var key: String {
+        [inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens]
+            .map { $0.map(String.init) ?? "-" }.joined(separator: ",")
+    }
 
     enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
@@ -359,21 +452,25 @@ private struct RawCodexUsage: Decodable {
         case outputTokens = "output_tokens"
         case cacheWriteTokens = "cache_write_tokens"
         case cacheCreationInputTokens = "cache_creation_input_tokens"
+        case reasoningOutputTokens = "reasoning_output_tokens"
+        case totalTokens = "total_tokens"
     }
 }
 
+/// `source` is `"cli"`, `{"subagent":"review"}`, `{"subagent":{"other":"guardian"}}`
+/// or `{"subagent":{"thread_spawn":{…}}}` (`spawn` on older CLIs); tolerate all.
 private struct RawCodexOrigin: Decodable {
-    var parentThreadId: String?
+    struct Spawn: Decodable { var parent_thread_id: String? }
+    var spawn: Spawn?
     init(from decoder: Decoder) throws {
         struct Origin: Decodable {
             struct Subagent: Decodable {
-                struct Spawn: Decodable { var parent_thread_id: String? }
                 var spawn: Spawn?
                 var thread_spawn: Spawn?
             }
             var subagent: Subagent?
         }
         let subagent = (try? Origin(from: decoder))?.subagent
-        parentThreadId = subagent?.thread_spawn?.parent_thread_id ?? subagent?.spawn?.parent_thread_id
+        spawn = subagent?.thread_spawn ?? subagent?.spawn
     }
 }
