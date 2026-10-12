@@ -16,8 +16,8 @@
 # catch a substitution either. `:no_check` is only defensible for a
 # `version :latest` cask where no stable digest exists.
 cask "tktracker" do
-  version "2.3.0"
-  sha256 "3758589431ebaba8cec415b9baf7eb7eecb1cbc2a589df01f9dba624d6ab2982"
+  version "2.3.1"
+  sha256 "cb99f72662e1256e03b60aa9763967d32ca0cc082b35a95e9a89f2362e38cfe3"
 
   url "https://github.com/malclement/TkTracker/releases/download/v#{version}/TkTracker-#{version}.zip"
   name "TkTracker"
