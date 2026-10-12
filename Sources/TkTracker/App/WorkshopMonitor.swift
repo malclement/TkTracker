@@ -8,6 +8,9 @@ enum WorkshopProcessProbe {
     struct Result: Sendable {
         var codexTranscripts: Set<String> = []
         var codexUncertain = false
+        /// When the process holding each transcript's writer started: the
+        /// current run of that session, for bounding its subagents.
+        var codexStarts: [String: Date] = [:]
     }
 
     static func sample() -> Result {
@@ -22,6 +25,9 @@ enum WorkshopProcessProbe {
             var executable = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
             guard proc_pidpath(pid, &executable, UInt32(executable.count)) > 0 else { continue }
             guard URL(fileURLWithPath: String(cString: executable)).lastPathComponent.lowercased() == "codex" else { continue }
+            var bsd = proc_bsdinfo()
+            let started = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout.size(ofValue: bsd))) > 0
+                ? Date(timeIntervalSince1970: Double(bsd.pbi_start_tvsec)) : nil
             let needed = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
             guard needed > 0 else {
                 if kill(pid, 0) == 0 || errno == EPERM { result.codexUncertain = true }
@@ -43,7 +49,10 @@ enum WorkshopProcessProbe {
                 }
                 // History reads also open rollout files. Only a retained writer
                 // descriptor establishes a loaded session.
-                if path.hasSuffix(".jsonl") && info.pfi.fi_openflags & UInt32(FWRITE) != 0 { result.codexTranscripts.insert(path) }
+                if path.hasSuffix(".jsonl") && info.pfi.fi_openflags & UInt32(FWRITE) != 0 {
+                    result.codexTranscripts.insert(path)
+                    if let started { result.codexStarts[path] = min(result.codexStarts[path] ?? started, started) }
+                }
             }
         }
         return result
@@ -108,6 +117,7 @@ actor WorkshopMonitor {
             let root = ScanCore.canonicalPath(profile.root)
             if profile.source == .codex {
                 if probe.codexUncertain { uncertain.insert(profile.id) }
+                var loaded: [(id: String, start: Date?)] = []
                 for path in probe.codexTranscripts.sorted() where path.hasPrefix(root + "/") {
                     usedPaths.insert(path)
                     let activity = read(path: path, source: .codex)
@@ -116,24 +126,23 @@ actor WorkshopMonitor {
                     let digest = lookup[key]
                     let first = opened[key] ?? now
                     opened[key] = first
+                    loaded.append((id, probe.codexStarts[path]))
                     observed.append(makeAgent(id: id, profile: profile, digest: digest, reader: activity,
                         path: path, cwd: digest?.cwd ?? activity?.cwd ?? "", openedAt: first, keepsTitles: keepsTitles))
                 }
-                // Codex may release a subagent's rollout writer after a turn.
-                // Keep transcript-backed descendants with their loaded parent,
-                // just as Claude teams do, including nested and completed agents.
-                var parents = Set(observed.filter { $0.profileID == profile.id && $0.source == .codex }.map(\.sessionID))
-                let children = digests.filter {
-                    $0.source == .codex && ($0.profileId ?? "codex") == profile.id && !$0.missing && $0.parentSessionId != nil
-                        && ScanCore.canonicalPath(URL(fileURLWithPath: $0.path)).hasPrefix(root + "/")
-                }
-                var added = true
-                while added {
-                    added = false
-                    for child in children where !parents.contains(child.sessionId) && child.parentSessionId.map({ parents.contains($0) }) == true {
-                        parents.insert(child.sessionId); added = true
+                // Codex releases a subagent's rollout writer once it is done.
+                // Keep its transcript with the loaded parent, as Claude teams
+                // do, but only from the parent's current run, and never as
+                // still working: without a writer, no turn is in progress.
+                let candidates = digests.filter { $0.source == .codex && ($0.profileId ?? "codex") == profile.id && !$0.missing && $0.parentSessionId != nil }
+                var seated = Set(loaded.map(\.id))
+                for lead in loaded {
+                    for child in Self.descendants(of: lead.id, in: candidates, since: lead.start) where !seated.contains(child.sessionId) {
+                        guard ScanCore.canonicalPath(URL(fileURLWithPath: child.path)).hasPrefix(root + "/") else { continue }
+                        seated.insert(child.sessionId)
                         usedPaths.insert(child.path)
-                        let activity = read(path: child.path, source: .codex)
+                        var activity = read(path: child.path, source: .codex)
+                        if !probe.codexUncertain { activity?.release() }
                         let key = WorkshopAgent.key(profile: profile.id, source: .codex, session: child.sessionId)
                         let first = opened[key] ?? Date(timeIntervalSince1970: child.firstTs ?? now.timeIntervalSince1970)
                         opened[key] = first
@@ -168,18 +177,12 @@ actor WorkshopMonitor {
 
                     // Subagents are transcript-backed within the currently loaded
                     // parent. Old runs are excluded when a session is resumed.
-                    var parentIDs: Set<String> = [meta.sessionId]
-                    let children = digests.filter { $0.source == .claude && ($0.profileId ?? "claude") == profile.id && !$0.missing && $0.parentSessionId != nil && ($0.lastTs ?? $0.mtime) >= meta.startDate.timeIntervalSince1970 }
-                    for _ in 0..<32 {
-                        var added = false
-                        for child in children where !parentIDs.contains(child.sessionId) && child.parentSessionId.map({ parentIDs.contains($0) }) == true {
-                            parentIDs.insert(child.sessionId); added = true
-                            usedPaths.insert(child.path)
-                            let activity = read(path: child.path, source: .claude)
-                            observed.append(makeAgent(id: child.sessionId, profile: profile, digest: child, reader: activity,
-                                path: child.path, cwd: child.cwd ?? meta.cwd, openedAt: Date(timeIntervalSince1970: child.firstTs ?? meta.startDate.timeIntervalSince1970), keepsTitles: keepsTitles))
-                        }
-                        if !added { break }
+                    let children = digests.filter { $0.source == .claude && ($0.profileId ?? "claude") == profile.id && !$0.missing && $0.parentSessionId != nil }
+                    for child in Self.descendants(of: meta.sessionId, in: children, since: meta.startDate) {
+                        usedPaths.insert(child.path)
+                        let activity = read(path: child.path, source: .claude)
+                        observed.append(makeAgent(id: child.sessionId, profile: profile, digest: child, reader: activity,
+                            path: child.path, cwd: child.cwd ?? meta.cwd, openedAt: Date(timeIntervalSince1970: child.firstTs ?? meta.startDate.timeIntervalSince1970), keepsTitles: keepsTitles))
                     }
                 }
             }
@@ -192,10 +195,31 @@ actor WorkshopMonitor {
         return Snapshot(agents: result, hasUncertainty: !uncertain.isEmpty, observedAt: now)
     }
 
+    /// A session's transcript-backed subagents, nested to any depth (bounded,
+    /// so cyclic metadata cannot spin), active since `runStart` when known so a
+    /// resumed session doesn't re-seat every agent from its earlier runs.
+    static func descendants(of root: String, in candidates: [FileDigest], since runStart: Date?) -> [FileDigest] {
+        let current = runStart.map { start in candidates.filter { ($0.lastTs ?? $0.mtime) >= start.timeIntervalSince1970 } } ?? candidates
+        var parents: Set<String> = [root]
+        var found: [FileDigest] = []
+        for _ in 0..<32 {
+            var added = false
+            for child in current where !parents.contains(child.sessionId) && child.parentSessionId.map({ parents.contains($0) }) == true {
+                parents.insert(child.sessionId); added = true
+                found.append(child)
+            }
+            if !added { break }
+        }
+        return found
+    }
+
     private func makeAgent(id: String, profile: SourceProfile, digest: FileDigest?, reader: WorkshopActivityReader?, path: String?, cwd: String, openedAt: Date, keepsTitles: Bool) -> WorkshopAgent {
-        WorkshopAgent(id: WorkshopAgent.key(profile: profile.id, source: profile.source, session: id), sessionID: id,
+        // A spawned agent's nickname is chosen by Codex, not typed by the
+        // user, so it shows even when prompt-derived titles are hidden.
+        let fallback = reader?.agentName ?? "Session \(id.prefix(8))"
+        return WorkshopAgent(id: WorkshopAgent.key(profile: profile.id, source: profile.source, session: id), sessionID: id,
             profileID: profile.id, source: profile.source, parentSessionID: reader?.parentSessionID ?? digest?.parentSessionId,
-            projectPath: cwd, title: keepsTitles ? (digest?.title ?? "Session \(id.prefix(8))") : "Session \(id.prefix(8))",
+            projectPath: cwd, title: keepsTitles ? (digest?.title ?? fallback) : fallback,
             model: reader?.model ?? digest?.lastModel, digestPath: path, state: reader?.state ?? .unavailable,
             activity: reader?.activity ?? "Waiting for activity details", tool: reader?.tool, lastActivity: reader?.date,
             openedAt: openedAt, events: reader?.events ?? [])
@@ -215,6 +239,7 @@ actor WorkshopMonitor {
                 let header = try file.read(upToCount: 1024 * 1024) ?? Data()
                 if let newline = header.firstIndex(of: 10) { tail.reader.consume(Data(header[..<newline]), source: source) }
                 let start = size > 1024 * 1024 ? size - 1024 * 1024 : 0
+                if start > 0 { tail.reader.skipReplay() }
                 try file.seek(toOffset: start)
                 tail.offset = start
                 if start > 0 {

@@ -489,7 +489,7 @@ private final class RoomNode: SKNode {
         var room = WorkshopRoomTemplate.maxDesks - shownLeads.count
         var shown: [WorkshopAgent] = []
         for session in project.sessions where shownLeads.contains(where: { $0.id == session.lead.id }) {
-            let subagents = Array(session.subagents.prefix(room))
+            let subagents = WorkshopAgent.mostRelevant(session.subagents, limit: room)
             room -= subagents.count
             shown += [session.lead] + subagents
         }

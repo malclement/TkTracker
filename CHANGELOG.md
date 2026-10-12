@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Workshops: recognize current Codex subagent parent metadata and preserve child identities when forked rollouts replay parent headers. Repair cached session metadata without replaying usage, and keep nested/completed subagents with their loaded parent.
+- Workshops: recognize current Codex subagent parent metadata and preserve child identities when forked rollouts replay parent headers. Keep nested/completed subagents with their loaded parent for its current run, show released agents as finished or interrupted rather than working, name them by their Codex nickname, and leave `/review` and auto-approval helpers out of teams. Crowded rooms seat the busiest subagents first.
 - Codex usage: re-sent `token_count` snapshots are no longer counted as new calls (about 10% of Codex tokens on real data), and a fork's replayed parent usage is skipped. Cached Codex sessions are re-parsed once on upgrade.
 - Codex sessions get titles from their first prompt again (current CLIs record prompts as `item_completed` events).
 
