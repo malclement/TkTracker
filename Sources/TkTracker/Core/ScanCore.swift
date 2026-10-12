@@ -198,10 +198,10 @@ struct ScanCore: Sendable {
         // Oldest-first biases the cold-scan claim race toward original sessions.
         // Exactly-once counting never depends on order — only display attribution
         // does, and claims persist, so attribution is stable after the first scan.
+        let revision = self.source.adapter.parserRevision
         let work = files
             .filter { meta in
                 guard let d = result[meta.url.path] else { return true }
-                let revision = source == .codex ? CodexParser.revision : 2
                 return d.parserRevision != revision || d.missing || d.size != meta.size || abs(d.mtime - meta.mtime) > 0.0005
             }
             .sorted { $0.mtime < $1.mtime }
