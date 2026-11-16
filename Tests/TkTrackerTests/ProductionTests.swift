@@ -60,6 +60,36 @@ struct ProductionTests {
         #expect(c.pricing(for: "claude-opus-4-7", context: PricingContext(tier: .fast)) == nil)
         #expect(c.pricing(for: "claude-sonnet-5", context: PricingContext(tier: .flex)) == nil)
     }
+    @Test func claude55GenerationRates() throws {
+        let c = PricingCatalog(document: PricingCatalog.builtIn, overrides: [:])
+        #expect(ModelIdentity.displayName("claude-fable-5-2") == "Fable 5.2")
+        #expect(ModelFamily(model: "claude-mythos-5-2") == .fable)
+        #expect(ModelFamily.version(of: "claude-fable-5-2") == 5.2)
+        for id in ["claude-fable-5-2[1m]", "claude-mythos-5-2"] {
+            let p = try #require(c.pricing(for: id))
+            #expect(p.input == 8); #expect(p.output == 40); #expect(p.cacheRead == 0.2)
+            #expect(p.cacheWrite5m == 10); #expect(p.cacheWrite1h == 16)
+        }
+        let fast = try #require(c.pricing(for: "claude-fable-5-2", context: PricingContext(tier: .fast)))
+        #expect(fast.input == 16); #expect(fast.output == 80)
+        #expect(c.contextWindow(for: "claude-fable-5-2") == 1_000_000)
+
+        let sonnet = try #require(c.pricing(for: "claude-sonnet-5-5"))
+        #expect(sonnet.input == 2); #expect(sonnet.output == 10); #expect(sonnet.cacheRead == 0.1)
+        #expect(sonnet.cacheWrite5m == 2.5); #expect(sonnet.cacheWrite1h == 4)
+        #expect(c.pricing(for: "claude-sonnet-5-5", context: PricingContext(tier: .fast)) == nil)
+
+        // Haiku 5.5 is priced by prompt length: 5× on every rate above 100K tokens.
+        let short = try #require(c.pricing(for: "claude-haiku-5-5", context: PricingContext(promptTokens: 100_000)))
+        #expect(short.input == 0.1); #expect(short.output == 0.5); #expect(short.cacheRead == 0.01)
+        #expect(short.cacheWrite5m == 0.125); #expect(short.cacheWrite1h == 0.2)
+        let long = try #require(c.pricing(for: "claude-haiku-5-5", context: PricingContext(promptTokens: 100_001)))
+        #expect(abs(long.input - 0.5) < 1e-12); #expect(abs(long.output - 2.5) < 1e-12)
+        #expect(abs(long.cacheRead - 0.05) < 1e-12)
+        #expect(abs(long.cacheWrite5m - 0.625) < 1e-12); #expect(abs(long.cacheWrite1h - 1) < 1e-12)
+        // A 100K–272K prompt must not hit OpenAI's band, nor Haiku's premium leak to it.
+        #expect(c.pricing(for: "gpt-6-astra", context: PricingContext(promptTokens: 150_000))?.input == 10)
+    }
     @Test func overridesAreIsolatedValidatedAndDurable() throws {
         let url = try scratch().appendingPathComponent("rates.json")
         let c = PricingCatalog(document: PricingCatalog.builtIn, overrides: [:], overridesURL: url)

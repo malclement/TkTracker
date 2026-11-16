@@ -16,13 +16,13 @@ counts and API-equivalent value by account, project, branch, session and model.
   and reset labels. Optional account refresh delegates authentication to your
   installed Codex CLI; it is disabled by default. Quota notifications are a
   separate opt-in.
-- **Current models:** GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, Claude Opus 5, Sonnet 5,
-  Fable 5.1 and Mythos 5.1, alongside earlier generations. Canonical identities
+- **Current models:** GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, Claude Fable 5.2 and
+  Mythos 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5, alongside earlier generations. Canonical identities
   keep Mini/Nano/Max variants and dated model names distinct where necessary.
 - **Pricing:** explicit cache rates, supported fast/batch/flex tiers, observed
   long-context premiums and regional modifiers. Unknown models remain unpriced;
   partial totals and missing service tiers are labeled. Override input, output
-  and cache rates in Settings → Pricing. Rates were checked September 7, 2026
+  and cache rates in Settings → Pricing. Rates were checked November 16, 2026
   against [OpenAI](https://developers.openai.com/api/docs/pricing) and
   [Anthropic](https://platform.claude.com/docs/en/about-claude/pricing).
 - **Reporting:** custom dates, the current calendar month, project/model filters,

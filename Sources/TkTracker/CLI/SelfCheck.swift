@@ -46,7 +46,7 @@ enum SelfCheck {
         )
         let probes = [
             "claude-opus-4-8", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-fable-5",
-            "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "gpt-5.5", "gpt-5.3-codex", "codex-mini-latest", "some-unknown-model",
+            "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.5", "gpt-5.3-codex", "codex-mini-latest", "some-unknown-model",
         ]
         for id in probes where catalog.pricing(for: id) != fallback.pricing(for: id) {
             failures.append("pricing.json disagrees with the compiled-in table for \(id)")
