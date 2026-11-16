@@ -3,7 +3,7 @@ enum BundledPricing {
     static let json = #"""
 {
   "schema": 2,
-  "updated": "2026-09-25",
+  "updated": "2026-11-16",
   "note": "USD per million tokens. Exact canonical IDs and explicit cache rates. Unknown service tiers use standard estimates; unsupported observed fast modes remain unpriced.",
   "webSearchPer1000": 10,
   "contextWindows": [],
@@ -342,6 +342,53 @@ enum BundledPricing {
       "cacheWrite1h": 0,
       "contextWindow": 272000,
       "sourceURL": "https://developers.openai.com/api/docs/pricing"
+    },
+    {
+      "match": [],
+      "ids": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "vendor": "anthropic",
+      "input": 8,
+      "output": 40,
+      "cacheRead": 0.2,
+      "cacheWrite5m": 10,
+      "cacheWrite1h": 16,
+      "contextWindow": 1000000,
+      "sourceURL": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fastMultiplier": 2
+    },
+    {
+      "match": [],
+      "ids": [
+        "claude-sonnet-5-5"
+      ],
+      "vendor": "anthropic",
+      "input": 2,
+      "output": 10,
+      "cacheRead": 0.1,
+      "cacheWrite5m": 2.5,
+      "cacheWrite1h": 4,
+      "contextWindow": 1000000,
+      "sourceURL": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "match": [],
+      "ids": [
+        "claude-haiku-5-5"
+      ],
+      "vendor": "anthropic",
+      "input": 0.1,
+      "output": 0.5,
+      "cacheRead": 0.01,
+      "cacheWrite5m": 0.125,
+      "cacheWrite1h": 0.2,
+      "contextWindow": 1000000,
+      "sourceURL": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "longContextThreshold": 100000,
+      "longContextInputMultiplier": 5,
+      "longContextOutputMultiplier": 5
     },
     {
       "match": [],

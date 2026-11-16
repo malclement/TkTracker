@@ -17,6 +17,10 @@ struct PricingRule: Codable, Sendable {
     var cacheWrite1h: Double?
     var contextWindow: Int64?
     var longContextThreshold: Int64?
+    /// Premium above `longContextThreshold`. Absent means the 2× input / 1.5×
+    /// output OpenAI charges; Claude Haiku 5.5 is 5× on both.
+    var longContextInputMultiplier: Double?
+    var longContextOutputMultiplier: Double?
     var fastMultiplier: Double?
     var validFrom: String?
     var validUntil: String?
@@ -198,8 +202,8 @@ final class PricingCatalog: @unchecked Sendable {
         var inputMultiplier = 1.0
         var outputMultiplier = 1.0
         if let threshold = matched?.longContextThreshold, let prompt = context?.promptTokens, prompt > threshold {
-            inputMultiplier = 2
-            outputMultiplier = 1.5
+            inputMultiplier = matched?.longContextInputMultiplier ?? 2
+            outputMultiplier = matched?.longContextOutputMultiplier ?? 1.5
         }
         let tier = context?.tier ?? .unknown
         let multiplier: Double

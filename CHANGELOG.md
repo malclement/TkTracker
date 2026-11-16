@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.2] - 2026-11-16
+
+Ad-hoc signed (not notarized): see the release notes to open it the first time.
+
+- Pricing: Claude Fable 5.2 and Mythos 5.2 ($8 / $40 per MTok, cache reads $0.20, fast mode 2×), Sonnet 5.5 ($2 / $10, cache reads $0.10) and Haiku 5.5 ($0.10 / $0.50) are priced. Their usage was already counted in tokens but showed as "no price". Existing history is repriced without a re-scan.
+- Haiku 5.5 requests whose prompt is over 100,000 tokens use Anthropic's higher rate (5× on every token type). A pricing rule can now state its own long-context premium instead of the fixed 2× input / 1.5× output.
+- Rates checked 2026-11-16.
+
+
 ## [2.3.1] - 2026-10-12
 
 Ad-hoc signed (not notarized): see the release notes to open it the first time.
